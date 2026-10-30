@@ -57,62 +57,116 @@ class AerospikeServerInfo:
     stop_writes_pct: Optional[int] = None
     memory_size: Optional[int] = None
     device_total_bytes: Optional[int] = None
+    # node name -> nsup-period. Dynamic config is per node; asinfo without -h
+    # shows only the node it connected to.
+    nsup_by_node: Dict[str, Optional[int]] = field(default_factory=dict)
     raw: Dict[str, str] = field(default_factory=dict)
 
-    @staticmethod
-    def _extract_response(info_result: Any) -> Optional[str]:
-        """Pull one node's response string out of an ``info_all`` result.
+    def nsup_display(self) -> str:
+        """Single value, or ``node=value`` pairs when the cluster disagrees."""
+        if not self.nsup_by_node:
+            return "unavailable" if self.nsup_period is None else str(self.nsup_period)
+        parts = [
+            f"{node}={'unknown' if value is None else value}"
+            for node, value in self.nsup_by_node.items()
+        ]
+        if len(parts) == 1:
+            return parts[0].split("=", 1)[1]
+        return ", ".join(parts)
 
-        ``info_all`` returns ``{node_id: (error, response)}`` (and some client
-        versions return a bare string). This tolerates both, returning the
-        first non-empty response string it finds.
-        """
-        if info_result is None:
-            return None
-        if isinstance(info_result, str):
-            return info_result
-        if isinstance(info_result, dict):
-            values = info_result.values()
-        else:
-            values = [info_result]
-        for value in values:
-            response = value
-            if isinstance(value, (tuple, list)):
-                response = next(
-                    (item for item in value if isinstance(item, str)), None
-                )
-            if isinstance(response, str) and response:
-                return response
+    @staticmethod
+    def _as_text(value: Any) -> Optional[str]:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        if isinstance(value, str) and value.strip():
+            return value
         return None
 
     @classmethod
-    def parse(cls, info_result: Any, namespace: str) -> "AerospikeServerInfo":
-        """Parse a ``namespace/<ns>`` info response into typed settings."""
-        text = cls._extract_response(info_result) or ""
+    def _tuple_text(cls, value: Union[tuple, list]) -> Optional[str]:
+        """``info_all`` stores ``(error, response)``. Prefer the response slot."""
+        if len(value) >= 2:
+            text = cls._as_text(value[1])
+            if text:
+                return text
+        for item in value:
+            text = cls._as_text(item)
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _node_texts(cls, info_result: Any) -> List[Tuple[str, str]]:
+        """Every non-empty ``info_all`` payload, keyed by node name."""
+        if isinstance(info_result, (str, bytes)):
+            text = cls._as_text(info_result)
+            return [("cluster", text)] if text else []
+        if isinstance(info_result, dict):
+            nodes: List[Tuple[str, str]] = []
+            for key, value in info_result.items():
+                if isinstance(value, (tuple, list)):
+                    text = cls._tuple_text(value)
+                else:
+                    text = cls._as_text(value)
+                if text:
+                    nodes.append((str(key), text))
+            return nodes
+        if isinstance(info_result, (tuple, list)):
+            text = cls._tuple_text(info_result)
+            return [("cluster", text)] if text else []
+        return []
+
+    @staticmethod
+    def _parse_pairs(text: str) -> Dict[str, str]:
         raw: Dict[str, str] = {}
         for pair in text.split(";"):
             if "=" in pair:
                 name, _, value = pair.partition("=")
                 raw[name.strip()] = value.strip()
+        return raw
 
-        def as_int(*names: str) -> Optional[int]:
-            for name in names:
-                if name in raw:
-                    try:
-                        return int(raw[name])
-                    except ValueError:
-                        return None
-            return None
+    @staticmethod
+    def _as_int(raw: Dict[str, str], *names: str) -> Optional[int]:
+        for name in names:
+            if name in raw:
+                try:
+                    return int(raw[name])
+                except ValueError:
+                    return None
+        return None
+
+    @classmethod
+    def parse(cls, info_result: Any, namespace: str) -> "AerospikeServerInfo":
+        """Parse a ``namespace/<ns>`` info response into typed settings.
+
+        ``info_all`` returns one payload per node. ``nsup-period`` is kept for
+        every node. The aggregate is ``0`` when any node reports ``0``, because
+        a write can land on that node and be rejected with error 22.
+        """
+        nodes = cls._node_texts(info_result)
+        parsed = [(name, cls._parse_pairs(text)) for name, text in nodes]
+        raw = parsed[0][1] if parsed else {}
+        nsup_by_node = {
+            name: cls._as_int(pairs, "nsup-period") for name, pairs in parsed
+        }
+        reported = [value for value in nsup_by_node.values() if value is not None]
+        if any(value == 0 for value in reported):
+            nsup_period: Optional[int] = 0
+        elif reported:
+            nsup_period = reported[0]
+        else:
+            nsup_period = None
 
         return cls(
             namespace=namespace,
-            nsup_period=as_int("nsup-period"),
+            nsup_period=nsup_period,
             # Newer servers expose "max-record-size"; older ones cap by
             # "write-block-size". Either way it bounds a single record.
-            max_record_size=as_int("max-record-size", "write-block-size"),
-            stop_writes_pct=as_int("stop-writes-pct"),
-            memory_size=as_int("memory-size"),
-            device_total_bytes=as_int("device_total_bytes"),
+            max_record_size=cls._as_int(raw, "max-record-size", "write-block-size"),
+            stop_writes_pct=cls._as_int(raw, "stop-writes-pct"),
+            memory_size=cls._as_int(raw, "memory-size"),
+            device_total_bytes=cls._as_int(raw, "device_total_bytes"),
+            nsup_by_node=nsup_by_node,
             raw=raw,
         )
 

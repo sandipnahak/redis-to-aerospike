@@ -9,10 +9,15 @@ for installs and issue reports, not a formal product release cadence.
 
 ## [Unreleased]
 
+### Added
+
+- [nsup-period](docs/08-nsup-period.md) explains the namespace supervisor, the per-node preflight check, and how to set `nsup-period` on every node.
+
 ### Fixed
 
 - Reading key expiry no longer fails on Redis-compatible sources that do not implement `PTTL` or `TTL` (Amazon MemoryDB Multi-Region returns `ERR unknown command` for both). `redis.ttl_command` selects `pttl`, `ttl`, `dump`, `expiretime`, or `pexpiretime`. `dump` reads an absolute expiry from a hash field inside the `DUMP` payload. Types whose read command is also missing, such as lists, are skipped instead of aborting the run.
 - A write that sets a TTL is rejected with Aerospike error 22 (`AS_ERR_FORBIDDEN`) when the namespace has `nsup-period` 0. `ttl_command` of `dump`, `expiretime`, or `pexpiretime` now stops the run before those writes, because Redis `INFO` does not count expiries stored inside the value.
+- The preflight `nsup-period` check reads every cluster node. `asinfo` without `-h` shows only one node, so a dynamic change on that node can leave the others at `0`. The error lists each node's value.
 
 ## [0.4.0] - 2026-06-29
 

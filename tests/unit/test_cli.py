@@ -284,7 +284,7 @@ def test_render_preflight_fails_ttl_when_dump_and_nsup_disabled():
     text = cli.render_preflight(
         config,
         {"keys": 10, "expires": 0},
-        AerospikeServerInfo(namespace="intuitpov", nsup_period=0, max_record_size=1048576),
+        AerospikeServerInfo(namespace="pov", nsup_period=0, max_record_size=1048576),
     )
     assert "preflight checks" in text
     assert "redis ping              : pass" in text
@@ -292,7 +292,7 @@ def test_render_preflight_fails_ttl_when_dump_and_nsup_disabled():
     assert "redis key count         : 10" in text
     assert "redis INFO expires      : 0" in text
     assert "ttl command             : dump" in text
-    assert "namespace               : intuitpov" in text
+    assert "namespace               : pov" in text
     assert "nsup-period             : 0" in text
     assert "ttl writes allowed      : fail" in text
 
@@ -412,6 +412,20 @@ def test_apply_server_info_skips_nsup_warning_when_redis_has_ttl_keys(caplog):
         cli.apply_server_info(config, info, redis_info={"expires": 3})
 
     assert not any("nsup-period=0" in r.message for r in caplog.records)
+
+
+def test_ttl_migration_blocked_reason_names_each_node():
+    info = AerospikeServerInfo.parse(
+        {
+            "BB9": (None, "nsup-period=0"),
+            "BBA": (None, "nsup-period=120"),
+        },
+        "pov",
+    )
+    reason = cli.ttl_migration_blocked_reason({}, info, cli.TtlCommand.DUMP)
+    assert reason is not None
+    assert "BB9=0, BBA=120" in reason
+    assert "every node" in reason
 
 
 def test_ttl_migration_blocked_reason_when_nsup_disabled_and_redis_has_expiring_keys():

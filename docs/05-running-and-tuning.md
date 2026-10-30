@@ -110,16 +110,23 @@ A `migration preview` block summarizing both sides:
   batch size, hash strategy, TTL overflow policy, max TTL, max record size,
   progress interval, and an estimated key count.
 
-### 2. Server-info checks
+### 2. Preflight
 
-Using what it read from Aerospike, the tool:
+A `preflight checks` block is logged after both servers answer and before the
+preview. It includes Redis `PING`, the Aerospike connection, the key count,
+`INFO` `expires`, `ttl_command`, and the namespace `nsup-period` (one value per
+node when they differ). `ttl writes allowed` is `pass`, `warn (nsup-period is
+0)`, or `fail`.
 
-- **Warns** when `nsup-period=0` (TTL eviction disabled) *and* Redis does not
-  report keys with TTL — since any TTLs written this run would never be enforced.
-- **Aborts** (exit code `2`) when `nsup-period=0` **and** Redis reports keys with
-  an expiry (`INFO keyspace` `expires` > 0), since those records cannot be
-  meaningfully migrated with working TTL expiration.
+- **`fail`** (exit code `2`) when any node has `nsup-period=0` and this run
+  would write expiries: `ttl_command` is `dump`, `expiretime`, or `pexpiretime`,
+  or Redis `INFO keyspace` reports `expires` > 0. Nothing is written.
+- **Warns** when any node has `nsup-period=0` and this run is not expected to
+  write expiries (`pttl` or `ttl`, and `expires` is 0 or unknown).
 - **Aligns** its max-record-size guard with the server's advertised limit.
+
+Details, the log line, and the commands to set `nsup-period` on every node are
+in [nsup-period](08-nsup-period.md).
 
 ### 3. Progress heartbeat (during the run)
 

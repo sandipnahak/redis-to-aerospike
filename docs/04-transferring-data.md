@@ -143,11 +143,11 @@ The tool enforces a boundary before writing:
 
 ### Will the server actually expire TTLs?
 
-If the target namespace has `nsup-period=0`, **TTL eviction is disabled** and any
-TTLs you write will never be enforced by the server. The tool reads Redis
-`INFO keyspace`: if any keys carry a TTL while `nsup-period` is `0`, the CLI
-**exits with an error** before writing. Otherwise it logs a warning only. See
-[Troubleshooting](06-troubleshooting.md#ttls-are-not-being-expired).
+Aerospike expires records only when the namespace `nsup-period` is non-zero on
+the node that stores them. `0` disables the namespace supervisor and the server
+rejects a positive TTL with error 22. The preflight check reads every node and
+stops the run when this migration would write expiries. See
+[nsup-period](08-nsup-period.md).
 
 ## Choosing which keys to migrate
 

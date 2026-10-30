@@ -615,12 +615,18 @@ def ttl_migration_blocked_reason(
     redis_part = ""
     if _redis_reports_expiring_keys(redis_info):
         redis_part = f" Redis reports {int(expires)} key(s) with an expiry."
+    node_part = ""
+    if aerospike_info.nsup_by_node:
+        node_part = (
+            f" Read nsup-period per node: {aerospike_info.nsup_display()}."
+            " asinfo without -h reads one node, and set-config applies only to that node."
+        )
     return (
         f"Records with TTL cannot be inserted into Aerospike namespace '{ns}': "
         "TTL expiration is disabled (nsup-period is 0). The server rejects those "
         "writes with error 22 (AS_ERR_FORBIDDEN)."
-        f"{command}{redis_part} "
-        "Set nsup-period to a non-zero value (for example 120) on the namespace, "
+        f"{command}{redis_part}{node_part} "
+        "Set nsup-period to a non-zero value (for example 120) on every node, "
         "then re-run."
     )
 
@@ -647,7 +653,7 @@ def render_preflight(
         lines.append("  aerospike namespace     : unavailable")
     else:
         lines.append(f"  namespace               : {aerospike_info.namespace}")
-        lines.append(f"  nsup-period             : {shown(aerospike_info.nsup_period)}")
+        lines.append(f"  nsup-period             : {aerospike_info.nsup_display()}")
         lines.append(f"  max-record-size         : {shown(aerospike_info.max_record_size)}")
         lines.append(f"  stop-writes-pct         : {shown(aerospike_info.stop_writes_pct)}")
     blocked = ttl_migration_blocked_reason(

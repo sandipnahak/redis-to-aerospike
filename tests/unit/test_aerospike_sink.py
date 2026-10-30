@@ -541,6 +541,31 @@ def test_server_info_parse_extracts_typed_fields():
     assert info.raw["nsup-period"] == "120"
 
 
+def test_server_info_parse_nsup_zero_on_any_node():
+    info = AerospikeServerInfo.parse(
+        {
+            "BB9": (None, "nsup-period=0;max-record-size=2048"),
+            "BBA": (None, b"nsup-period=120;max-record-size=2048"),
+        },
+        "pov",
+    )
+    assert info.nsup_period == 0
+    assert info.nsup_by_node == {"BB9": 0, "BBA": 120}
+    assert info.nsup_display() == "BB9=0, BBA=120"
+
+
+def test_server_info_parse_nsup_when_every_node_is_nonzero():
+    info = AerospikeServerInfo.parse(
+        {
+            "BB9": (None, "nsup-period=120"),
+            "BBA": ("ignored-error", "nsup-period=120"),
+        },
+        "pov",
+    )
+    assert info.nsup_period == 120
+    assert info.nsup_display() == "BB9=120, BBA=120"
+
+
 def test_server_info_parse_falls_back_to_write_block_size():
     info = AerospikeServerInfo.parse("nsup-period=0;write-block-size=131072", "test")
     assert info.nsup_period == 0

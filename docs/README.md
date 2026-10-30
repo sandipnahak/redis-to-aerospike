@@ -62,6 +62,7 @@ To see the installed revision, run `redis2aerospike --version`. Notable changes 
 | [05 - Running and tuning](05-running-and-tuning.md) | Config methods, performance knobs, output, exit codes. |
 | [06 - Troubleshooting](06-troubleshooting.md) | Symptom -> cause -> fix for common failures. |
 | [07 - Configuration reference](07-configuration-reference.md) | Every flag, YAML key, env var, and default in one place. |
+| [08 - nsup-period](08-nsup-period.md) | What `nsup-period` is, how preflight reads it on every node, and how to set it. |
 | [Changelog](../CHANGELOG.md) | Version history and notable changes. |
 
 ## How you configure the tool
