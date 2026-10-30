@@ -39,6 +39,18 @@ redis:
   # work). Separate from Aerospike set_routes. Default: * (whole keyspace).
   scan_match: "*"          # default: *  (YAML alias: key_pattern if scan_match omitted)
 
+  # How to read key expiry. Remaining time is stored on the Aerospike record.
+  #   pttl        -- remaining milliseconds (default; Redis / Valkey)
+  #   ttl         -- remaining seconds
+  #   expiretime  -- absolute Unix expiry in seconds (Redis 7+)
+  #   pexpiretime -- absolute Unix expiry in milliseconds (Redis 7+)
+  #   dump        -- absolute expiry embedded in the value. MemoryDB Multi-Region
+  #                  has no TTL commands; DUMP of a hash whose field `e` is a
+  #                  Unix-millisecond timestamp (1813638928335) supplies it.
+  # YAML alias: ttl_check_command. Env: REDIS_TTL_COMMAND.
+  ttl_command: pttl
+  ttl_dump_field: e        # hash field read when ttl_command is dump
+
 aerospike:
   # Either a single host/port ...
   host: localhost          # default: localhost

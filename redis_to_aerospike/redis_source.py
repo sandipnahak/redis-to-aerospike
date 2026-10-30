@@ -10,18 +10,114 @@ SCAN batch costs only a couple of round-trips.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, Iterator, List, Tuple, cast
+import re
+import time
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Tuple, cast
 
 import redis
 from redis.cluster import RedisCluster
+from redis.exceptions import RedisError
 
-from .config import RedisConfig
+from .config import RedisConfig, TtlCommand
+from .dump_ttl import ttl_ms_from_dump
 from .models import RedisRecord
 
 logger = logging.getLogger(__name__)
 
 # Standalone :class:`redis.Redis` or :class:`redis.cluster.RedisCluster`.
 RedisConnection = redis.Redis | RedisCluster
+
+# How remaining expiry is read. ``pttl`` is milliseconds (Redis). ``ttl`` is
+# seconds, scaled to milliseconds so the rest of the pipeline stays uniform.
+# ``expiretime`` / ``pexpiretime`` are absolute Unix timestamps. ``dump`` reads
+# an absolute timestamp from a hash field in the DUMP payload. ``none`` means
+# the source has no expiry commands, so every key is treated as persistent.
+TtlReadMode = Literal["pttl", "ttl", "dump", "expiretime", "pexpiretime", "none"]
+
+# Value read for each Redis type. Missing from the server COMMAND table means
+# the source cannot return that type (MemoryDB Multi-Region has no lists).
+_VALUE_COMMANDS = {
+    "string": "get",
+    "hash": "hgetall",
+    "list": "lrange",
+    "set": "smembers",
+    "zset": "zrange",
+}
+
+
+def _command_names(client: Any) -> set[str] | None:
+    """Lowercased command names from a cluster client's COMMAND cache.
+
+    Standalone clients (and test doubles) have no cache and return ``None``,
+    which means "try PTTL and learn from the error".
+    """
+    parser = getattr(client, "commands_parser", None)
+    raw = getattr(parser, "commands", None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    names: set[str] = set()
+    for key in raw:
+        if isinstance(key, bytes):
+            names.add(key.decode("utf-8", "replace").lower())
+        else:
+            names.add(str(key).lower())
+    return names
+
+
+def _now_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+def _remaining_from_absolute_ms(expiry_ms: int, now_ms: int) -> int:
+    remaining = expiry_ms - now_ms
+    return remaining if remaining > 0 else 0
+
+
+def _ensure_keyed_command(client: Any, command: str) -> None:
+    """Teach a cluster client how to route *command* when COMMAND omitted it.
+
+    redis-py refuses to send a command that is missing from the server's
+    COMMAND table ("DUMP command doesn't exist in Redis commands") even when
+    the server accepts it. Register the key position so an explicit
+    ``ttl_command`` is actually sent.
+    """
+    parser = getattr(client, "commands_parser", None)
+    commands = getattr(parser, "commands", None)
+    if not isinstance(commands, dict):
+        return
+    key = command.lower()
+    if key in commands or key.encode() in commands:
+        return
+    commands[key] = {
+        "name": key,
+        "flags": ["readonly", "fast"],
+        "first_key_pos": 1,
+        "last_key_pos": 1,
+        "step_count": 1,
+    }
+
+
+def _is_unsupported_command(exc: BaseException, command: str) -> bool:
+    """True when *exc* means the server or cluster client lacks *command*.
+
+    Cluster clients raise ``RedisError`` ("PTTL command doesn't exist in Redis
+    commands") without contacting the server. The server itself answers
+    ``unknown command`` (``ERR unknown command 'TTL'``) or ``NOPERM``.
+
+    ``ttl`` is matched as its own command so a ``PTTL`` error is not mistaken
+    for a missing ``TTL``.
+    """
+    text = str(exc).lower()
+    unsupported = (
+        "doesn't exist" in text
+        or "does not exist" in text
+        or "unknown command" in text
+        or "noperm" in text
+    )
+    if not unsupported:
+        return False
+    name = command.lower()
+    return re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", text) is not None
 
 
 def redis_client_params(config: RedisConfig):
@@ -76,6 +172,10 @@ class RedisSource:
     def __init__(self, config: RedisConfig, client: RedisConnection | None = None):
         self._config = config
         self._cluster = config.cluster
+        # Chosen on the first read. ``None`` until then so a source that is
+        # only pinged never probes TTL support.
+        self._ttl_mode: TtlReadMode | None = None
+        self._unsupported_read_types: set[str] = set()
         if client is not None:
             self._client = client
             return
@@ -252,29 +352,144 @@ class RedisSource:
             yield batch
 
     def _fetch_types_and_ttls(self, keys: Iterable[bytes]):
+        key_list = list(keys)
+        mode = self._ttl_mode
+        if mode is None:
+            mode = self._initial_ttl_mode()
+            self._ttl_mode = mode
+            if mode != "pttl":
+                self._log_ttl_mode(mode)
+        try:
+            return self._read_types_and_ttls(key_list, mode)
+        except RedisError as exc:
+            # Adaptive fallback applies only to the default PTTL command.
+            # An explicit ttl_command (ttl, dump, expiretime, ...) is used as
+            # given; a missing command is a configuration error.
+            if self._config.ttl_command is not TtlCommand.PTTL:
+                raise
+            # redis-py's cluster client raises this *before* the command is
+            # sent when the name is missing from the server COMMAND table:
+            # "PTTL command doesn't exist in Redis commands".
+            fallback = self._degrade_ttl_mode(mode, exc)
+            if fallback is None:
+                raise
+            self._ttl_mode = fallback
+            self._log_ttl_mode(fallback)
+            return self._fetch_types_and_ttls(key_list)
+
+    def _initial_ttl_mode(self) -> TtlReadMode:
+        configured = self._config.ttl_command
+        if configured is TtlCommand.PTTL:
+            return self._choose_ttl_mode()
+        _ensure_keyed_command(self._client, configured.value)
+        return cast(TtlReadMode, configured.value)
+
+    def _choose_ttl_mode(self) -> TtlReadMode:
+        """Pick a TTL command from the server's COMMAND table, if it has one.
+
+        Cluster clients cache that table and refuse to route anything absent
+        from it. Standalone clients have no table; they try ``PTTL`` and degrade
+        on the error instead.
+        """
+        names = _command_names(self._client)
+        if names is None or "pttl" in names:
+            return "pttl"
+        if "ttl" in names:
+            return "ttl"
+        return "none"
+
+    def _degrade_ttl_mode(self, mode: TtlReadMode, exc: BaseException) -> TtlReadMode | None:
+        # Only fall back to TTL when the server's COMMAND table actually lists
+        # it. MemoryDB Multi-Region answers both PTTL and TTL with
+        # "ERR unknown command", and sending TTL after PTTL fails aborts the read.
+        if mode == "pttl" and _is_unsupported_command(exc, "pttl"):
+            names = _command_names(self._client)
+            if names is not None and "ttl" in names:
+                return "ttl"
+            return "none"
+        if mode == "ttl" and _is_unsupported_command(exc, "ttl"):
+            return "none"
+        return None
+
+    def _log_ttl_mode(self, mode: TtlReadMode) -> None:
+        if mode == "ttl" and self._config.ttl_command is TtlCommand.PTTL:
+            logger.warning(
+                "Source does not implement PTTL; reading expiry with TTL "
+                "(second precision)."
+            )
+        elif mode == "none":
+            logger.warning(
+                "Source implements neither PTTL nor TTL, so keys are migrated "
+                "without an expiry. Set redis.ttl_command to dump when the "
+                "value stores an absolute expiry (MemoryDB Multi-Region)."
+            )
+        elif mode == "dump":
+            logger.info(
+                "Reading key expiry from DUMP hash field '%s' "
+                "(absolute timestamp)",
+                self._config.ttl_dump_field,
+            )
+        elif mode == "expiretime":
+            logger.info("Reading key expiry with EXPIRETIME (absolute Unix seconds)")
+        elif mode == "pexpiretime":
+            logger.info(
+                "Reading key expiry with PEXPIRETIME (absolute Unix milliseconds)"
+            )
+        elif mode == "ttl":
+            logger.info("Reading key expiry with TTL (seconds)")
+
+    def _read_types_and_ttls(self, keys: List[bytes], mode: TtlReadMode):
         pipe = self._client.pipeline(transaction=False)
         for key in keys:
             rk = cast(Any, key)
             pipe.type(rk)
-            pipe.pttl(rk)
+            if mode == "pttl":
+                pipe.pttl(rk)
+            elif mode == "ttl":
+                pipe.ttl(rk)
+            elif mode == "dump":
+                pipe.dump(rk)
+            elif mode == "expiretime":
+                pipe.expiretime(rk)
+            elif mode == "pexpiretime":
+                pipe.pexpiretime(rk)
         results = pipe.execute()
 
         types = {}
         ttls = {}
+        stride = 1 if mode == "none" else 2
+        now_ms = _now_ms()
         for i, key in enumerate(keys):
-            raw_type = results[i * 2]
-            pttl = results[i * 2 + 1]
+            raw_type = results[i * stride]
             types[key] = self._decode(raw_type)
-            # PTTL: -1 -> no expiry, -2 -> key missing. Either way: no TTL.
-            ttls[key] = pttl if isinstance(pttl, int) and pttl >= 0 else None
+            if mode == "none":
+                ttls[key] = None
+                continue
+            ttls[key] = self._ttl_ms_from_reply(mode, results[i * stride + 1], now_ms)
         return types, ttls
+
+    def _ttl_ms_from_reply(self, mode: TtlReadMode, raw: Any, now_ms: int) -> int | None:
+        if mode == "dump":
+            if not isinstance(raw, (bytes, bytearray)):
+                return None
+            return ttl_ms_from_dump(bytes(raw), self._config.ttl_dump_field, now_ms)
+        if not isinstance(raw, int) or raw < 0:
+            # PTTL/TTL/EXPIRETIME: -1 no expiry, -2 missing key.
+            return None
+        if mode == "ttl":
+            return raw * 1000
+        if mode == "expiretime":
+            return _remaining_from_absolute_ms(raw * 1000, now_ms)
+        if mode == "pexpiretime":
+            return _remaining_from_absolute_ms(raw, now_ms)
+        return raw
 
     def _fetch_values(self, keys: Iterable[bytes], types):
         pipe = self._client.pipeline(transaction=False)
         ordered_keys: List[bytes] = []
         for key in keys:
             key_type = types[key]
-            if key_type == "none":
+            if key_type == "none" or not self._read_supported(key_type):
                 continue
             ordered_keys.append(key)
             rk = cast(Any, key)
@@ -294,6 +509,23 @@ class RedisSource:
                 pipe.exists(rk)
         results = pipe.execute()
         return dict(zip(ordered_keys, results))
+
+    def _read_supported(self, key_type: str) -> bool:
+        """False when the source COMMAND table omits this type's read command."""
+        command = _VALUE_COMMANDS.get(key_type)
+        if command is None:
+            return True
+        names = _command_names(self._client)
+        if names is None or command in names:
+            return True
+        if key_type not in self._unsupported_read_types:
+            self._unsupported_read_types.add(key_type)
+            logger.warning(
+                "Source does not implement %s; skipping Redis type '%s'",
+                command.upper(),
+                key_type,
+            )
+        return False
 
     @staticmethod
     def _decode(value):

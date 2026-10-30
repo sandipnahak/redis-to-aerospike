@@ -3,8 +3,9 @@
 from typing import cast
 
 import pytest
+from redis.exceptions import RedisError
 
-from redis_to_aerospike.config import RedisConfig
+from redis_to_aerospike.config import RedisConfig, TtlCommand
 from redis_to_aerospike.redis_source import RedisConnection, RedisSource, redis_client_params
 
 
@@ -188,6 +189,267 @@ def test_server_info_reports_keys(source, fake_redis):
     # dbsize is always available; memory/version/keyspace are best-effort and
     # depend on the backend, so we only assert the reliable count here.
     assert info["keys"] == 2
+
+
+class _CommandTable:
+    def __init__(self, names):
+        self.commands = {name: {"name": name} for name in names}
+
+
+class _TtlPipe:
+    """Pipeline double whose TTL commands can be rejected like MemoryDB."""
+
+    def __init__(self, data, allowed, client):
+        self._data = data
+        self._allowed = allowed
+        self._client = client
+        self._ops = []
+
+    def type(self, key):
+        self._ops.append(("type", key))
+        return self
+
+    def pttl(self, key):
+        self._ops.append(("pttl", key))
+        return self
+
+    def ttl(self, key):
+        self._ops.append(("ttl", key))
+        self._client.ttl_calls += 1
+        return self
+
+    def get(self, key):
+        self._ops.append(("get", key))
+        return self
+
+    def execute(self):
+        out = []
+        for op, key in self._ops:
+            if op in ("pttl", "ttl") and op not in self._allowed:
+                raise RedisError(f"{op.upper()} command doesn't exist in Redis commands")
+            type_name, value, ttl_s = self._data[key]
+            if op == "type":
+                out.append(type_name)
+            elif op == "pttl":
+                out.append(-1 if ttl_s is None else ttl_s * 1000)
+            elif op == "ttl":
+                out.append(-1 if ttl_s is None else ttl_s)
+            elif op == "get":
+                out.append(value)
+        return out
+
+
+class _TtlClient:
+    def __init__(self, data, commands=None, allowed=None):
+        # data: key bytes -> (type, value, ttl seconds or None)
+        self._data = data
+        self._allowed = set(allowed if allowed is not None else (commands or {"pttl", "ttl"}))
+        self.ttl_calls = 0
+        if commands is not None:
+            self.commands_parser = _CommandTable(commands)
+
+    def scan(self, cursor=0, match=None, count=None):
+        return 0, list(self._data)
+
+    def pipeline(self, transaction=False):
+        return _TtlPipe(self._data, self._allowed, self)
+
+
+def test_missing_pttl_and_ttl_migrates_without_expiry(caplog):
+    # Amazon MemoryDB Multi-Region advertises neither TTL command.
+    data = {b"user:1": (b"string", b"v", None)}
+    client = _TtlClient(data, commands=["type", "get", "scan"])
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    assert records["user:1"].value == b"v"
+    assert records["user:1"].ttl_ms is None
+    assert "neither PTTL nor TTL" in caplog.text
+
+
+def test_ttl_fallback_scales_seconds_to_milliseconds(caplog):
+    data = {b"cache": (b"string", b"v", 30), b"forever": (b"string", b"v", None)}
+    client = _TtlClient(data, commands=["type", "get", "ttl", "scan"])
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    assert records["cache"].ttl_ms == 30_000
+    assert records["forever"].ttl_ms is None
+    assert "does not implement PTTL" in caplog.text
+
+
+def test_unadvertised_pttl_does_not_call_ttl():
+    # No COMMAND cache and PTTL is rejected: do not send TTL. MemoryDB
+    # Multi-Region answers that with "ERR unknown command 'TTL'".
+    data = {b"cache": (b"string", b"v", 12)}
+    client = _TtlClient(data, commands=None, allowed={"ttl"})
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    assert records["cache"].ttl_ms is None
+    assert client.ttl_calls == 0
+
+
+def test_server_unknown_command_ttl_migrates_without_expiry(caplog):
+    # COMMAND listed TTL, but the server still rejects it.
+    data = {b"sku": (b"string", b"v", 9)}
+
+    class _RejectTtl(_TtlClient):
+        def pipeline(self, transaction=False):
+            pipe = super().pipeline(transaction=transaction)
+
+            def execute():
+                if any(op == "ttl" for op, _key in pipe._ops):
+                    raise RedisError("ERR unknown command 'TTL'")
+                return _TtlPipe.execute(pipe)
+
+            pipe.execute = execute
+            return pipe
+
+    client = _RejectTtl(data, commands=["type", "get", "ttl", "scan"])
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    assert records["sku"].value == b"v"
+    assert records["sku"].ttl_ms is None
+    assert "neither PTTL nor TTL" in caplog.text
+
+
+def test_unsupported_list_read_is_skipped(caplog):
+    # MemoryDB Multi-Region has strings but no list commands.
+    data = {
+        b"s": (b"string", b"v", None),
+        b"l": (b"list", [b"x"], None),
+    }
+    client = _TtlClient(data, commands=["type", "get", "scan"])
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    assert list(records) == ["s"]
+    assert records["s"].value == b"v"
+    assert "skipping Redis type 'list'" in caplog.text
+
+
+# redis-cli DUMP: hash fields v=TTO_FR_WEB and e=1813638928335.
+_MEMORYDB_DUMP = b"\x04\x02\x01v\nTTO_FR_WEB\x01e\r1813638928335\x0b\x00'Lum4\xa68Y"
+_EXPIRY_MS = 1_813_638_928_335
+
+
+class _DumpPipe:
+    def __init__(self):
+        self._ops = []
+
+    def type(self, key):
+        self._ops.append("type")
+        return self
+
+    def dump(self, key):
+        self._ops.append("dump")
+        return self
+
+    def hgetall(self, key):
+        self._ops.append("hgetall")
+        return self
+
+    def execute(self):
+        out = []
+        for op in self._ops:
+            if op == "type":
+                out.append(b"hash")
+            elif op == "dump":
+                out.append(_MEMORYDB_DUMP)
+            elif op == "hgetall":
+                out.append({b"v": b"TTO_FR_WEB", b"e": b"1813638928335"})
+        return out
+
+
+class _DumpClient:
+    def scan(self, cursor=0, match=None, count=None):
+        return 0, [b"M1TELnOQ9Q8:U=9dKVIhzfMV5:startSku"]
+
+    def pipeline(self, transaction=False):
+        return _DumpPipe()
+
+
+def test_dump_command_reads_embedded_expiry(monkeypatch):
+    monkeypatch.setattr("redis_to_aerospike.redis_source._now_ms", lambda: _EXPIRY_MS - 90_000)
+    src = RedisSource(
+        RedisConfig(ttl_command=TtlCommand.DUMP),
+        client=cast(RedisConnection, _DumpClient()),
+    )
+
+    records = _by_key(src.iter_records(batch_size=10))
+
+    record = records["M1TELnOQ9Q8:U=9dKVIhzfMV5:startSku"]
+    assert record.type == "hash"
+    assert record.value[b"v"] == b"TTO_FR_WEB"
+    assert record.ttl_ms == 90_000
+
+
+def test_expiretime_is_absolute_unix_seconds(monkeypatch):
+    now_ms = 1_700_000_000_000
+
+    class _Pipe:
+        def __init__(self):
+            self._ops = []
+
+        def type(self, key):
+            self._ops.append("type")
+            return self
+
+        def expiretime(self, key):
+            self._ops.append("expiretime")
+            return self
+
+        def get(self, key):
+            self._ops.append("get")
+            return self
+
+        def execute(self):
+            out = []
+            for op in self._ops:
+                if op == "type":
+                    out.append(b"string")
+                elif op == "expiretime":
+                    out.append(1_700_000_000 + 30)
+                elif op == "get":
+                    out.append(b"v")
+            return out
+
+    class _Client:
+        def scan(self, cursor=0, match=None, count=None):
+            return 0, [b"k"]
+
+        def pipeline(self, transaction=False):
+            return _Pipe()
+
+    monkeypatch.setattr("redis_to_aerospike.redis_source._now_ms", lambda: now_ms)
+    src = RedisSource(
+        RedisConfig(ttl_command=TtlCommand.EXPIRETIME),
+        client=cast(RedisConnection, _Client()),
+    )
+    records = _by_key(src.iter_records(batch_size=10))
+    assert records["k"].ttl_ms == 30_000
+
+
+def test_unrelated_redis_error_is_not_treated_as_missing_ttl():
+    class _BrokenPipe(_TtlPipe):
+        def execute(self):
+            raise RedisError("connection reset by peer")
+
+    class _Broken(_TtlClient):
+        def pipeline(self, transaction=False):
+            return _BrokenPipe(self._data, self._allowed, self)
+
+    client = _Broken({b"a": (b"string", b"v", 1)}, commands=["pttl", "type", "get"])
+    src = RedisSource(RedisConfig(), client=cast(RedisConnection, client))
+    with pytest.raises(RedisError, match="connection reset"):
+        list(src.iter_records(batch_size=10))
 
 
 def test_server_info_is_best_effort(monkeypatch):

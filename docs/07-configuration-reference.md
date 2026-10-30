@@ -39,6 +39,8 @@ The same block configures any **Redis-protocol** source, including **Valkey**.
 | Socket timeout (s)   | -                  | `socket_timeout`         | `REDIS_SOCKET_TIMEOUT`         | none                                |
 | Connect timeout (s)  | -                  | `socket_connect_timeout` | `REDIS_SOCKET_CONNECT_TIMEOUT` | none                                |
 | Key match pattern    | `--redis-match`    | `scan_match`             | `REDIS_SCAN_MATCH`             | `*`                                 |
+| TTL check command    | -                  | `ttl_command`            | `REDIS_TTL_COMMAND`            | `pttl` (`pttl`/`ttl`/`dump`/`expiretime`/`pexpiretime`) |
+| DUMP expiry field    | -                  | `ttl_dump_field`         | `REDIS_TTL_DUMP_FIELD`         | `e` (used only when `ttl_command` is `dump`) |
 
 
 Notes:
@@ -47,6 +49,13 @@ Notes:
 the discrete host/port/db/auth/SSL fields are ignored (timeouts still apply).
 Use `rediss://` for TLS.
 - `cluster: true` always uses database `0`.
+- `ttl_command` chooses how expiry is read. `pttl` and `ttl` are remaining
+  time. `expiretime` and `pexpiretime` are absolute Unix timestamps (seconds
+  and milliseconds). `dump` reads an absolute timestamp from hash field
+  `ttl_dump_field` (default `e`) inside the `DUMP` payload. That is the path
+  for Amazon MemoryDB Multi-Region, which implements `DUMP` and rejects
+  `PTTL`, `TTL`, and `EXPIRETIME`. `ttl_check_command` is a YAML alias for
+  `ttl_command`.
 
 ## Aerospike sink (YAML section: `aerospike:`)
 

@@ -101,6 +101,29 @@ must be ``map_bin`` when a fourth segment is present).
 Redis TTLs (in milliseconds) are converted to Aerospike TTLs (in seconds). Keys
 with no expiry are written as **never-expire**.
 
+Which Redis command supplies the expiry is `redis.ttl_command`:
+
+| Command | Reply | Stored TTL |
+| --- | --- | --- |
+| `pttl` (default) | Remaining time in milliseconds. `-1` / `-2` mean no expiry. | That many milliseconds, rounded up to seconds. |
+| `ttl` | Remaining time in seconds. | Seconds × 1000. |
+| `pexpiretime` | Absolute Unix expiry in milliseconds. | `expiry - now`. |
+| `expiretime` | Absolute Unix expiry in seconds. | `(expiry × 1000) - now`. |
+| `dump` | RDB serialization of the value. | Absolute timestamp in hash field `ttl_dump_field` (default `e`). A number ≥ 10^12 is Unix milliseconds; ≥ 10^9 is Unix seconds; a smaller positive number is a remaining TTL in seconds. |
+
+`dump` is for sources that have no TTL commands. Amazon MemoryDB Multi-Region
+rejects `PTTL`, `TTL`, and `EXPIRETIME`, but `DUMP` returns the value. A hash
+like `\x04\x02\x01v\nTTO_FR_WEB\x01e\r1813638928335...` is fields `v` =
+`TTO_FR_WEB` and `e` = `1813638928335` (absolute milliseconds). The key's Redis
+TTL is not part of `DUMP`; only this embedded field is.
+
+```yaml
+redis:
+  cluster: true
+  ttl_command: dump
+  ttl_dump_field: e
+```
+
 ### The max-TTL boundary
 
 Aerospike caps a record's TTL at the namespace `max-ttl` (10 years by default).

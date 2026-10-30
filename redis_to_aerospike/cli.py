@@ -518,6 +518,7 @@ def render_preview(
         f"    auth        : {_redis_auth_summary(redis)}",
         f"    tls         : {_redis_tls_summary(redis)}",
         f"    SCAN filter : {redis.scan_match}",
+        f"    TTL command : {redis.ttl_command.value}",
         f"    keys        : {fmt(redis_info.get('keys'))}",
         f"    with TTL     : {fmt(redis_info.get('expires'))}",
         f"    used memory : {fmt(redis_info.get('used_memory_human'))}",

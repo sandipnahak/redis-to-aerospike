@@ -9,6 +9,10 @@ for installs and issue reports, not a formal product release cadence.
 
 ## [Unreleased]
 
+### Fixed
+
+- Reading key expiry no longer fails on Redis-compatible sources that do not implement `PTTL` or `TTL` (Amazon MemoryDB Multi-Region returns `ERR unknown command` for both). Keys are migrated without an expiry unless `redis.ttl_command` selects another source. `dump` reads an absolute expiry from a hash field inside the `DUMP` payload. Types whose read command is also missing, such as lists, are skipped instead of aborting the run.
+
 ## [0.4.0] - 2026-06-29
 
 ### Added

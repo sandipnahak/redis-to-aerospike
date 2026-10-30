@@ -93,6 +93,37 @@ class HashStrategy(str, Enum):
 DEFAULT_MAX_TTL_S = 315_360_000
 
 
+class TtlCommand(str, Enum):
+    """Which Redis command supplies key expiry.
+
+    * ``PTTL``        -- remaining time in milliseconds (default).
+    * ``TTL``         -- remaining time in seconds.
+    * ``DUMP``        -- absolute expiry stored in a hash field inside the DUMP payload.
+    * ``EXPIRETIME``  -- absolute Unix expiry in seconds (Redis 7+).
+    * ``PEXPIRETIME`` -- absolute Unix expiry in milliseconds (Redis 7+).
+    """
+
+    PTTL = "pttl"
+    TTL = "ttl"
+    DUMP = "dump"
+    EXPIRETIME = "expiretime"
+    PEXPIRETIME = "pexpiretime"
+
+
+def _parse_ttl_command(value: Any) -> TtlCommand:
+    if isinstance(value, TtlCommand):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "ttl_command must be one of: pttl, ttl, dump, expiretime, pexpiretime"
+        )
+    try:
+        return TtlCommand(value.strip().lower())
+    except ValueError:
+        allowed = ", ".join(item.value for item in TtlCommand)
+        raise ValueError(f"ttl_command must be one of: {allowed} (got {value!r})") from None
+
+
 class TtlOverflowPolicy(str, Enum):
     """What to do when a Redis TTL exceeds the Aerospike max-ttl.
 
@@ -222,6 +253,13 @@ class RedisConfig:
     # Glob pattern passed to SCAN. ``*`` migrates every key.
     scan_match: str = "*"
 
+    # How to read key expiry. ``pttl`` is remaining milliseconds. ``dump`` reads
+    # an absolute timestamp from a hash field inside the DUMP payload (the
+    # MemoryDB Multi-Region path, which has no TTL/PTTL/EXPIRETIME).
+    ttl_command: TtlCommand = TtlCommand.PTTL
+    # Hash field read when ``ttl_command`` is ``dump``.
+    ttl_dump_field: str = "e"
+
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "RedisConfig":
         lookup: Mapping[str, str] = os.environ if env is None else env
@@ -246,6 +284,11 @@ class RedisConfig:
             socket_timeout=as_float("REDIS_SOCKET_TIMEOUT"),
             socket_connect_timeout=as_float("REDIS_SOCKET_CONNECT_TIMEOUT"),
             scan_match=lookup.get("REDIS_SCAN_MATCH", cls.scan_match),
+            ttl_command=_parse_ttl_command(
+                lookup.get("REDIS_TTL_COMMAND", cls.ttl_command.value)
+            ),
+            ttl_dump_field=lookup.get("REDIS_TTL_DUMP_FIELD", cls.ttl_dump_field)
+            or cls.ttl_dump_field,
         )
 
     @classmethod
@@ -260,6 +303,13 @@ class RedisConfig:
             data["scan_match"] = data.pop("key_pattern")
         elif "key_pattern" in data:
             data.pop("key_pattern")
+        # "TTL check command" is the name used in the docs; ttl_command is canonical.
+        if "ttl_check_command" in data and "ttl_command" not in data:
+            data["ttl_command"] = data.pop("ttl_check_command")
+        else:
+            data.pop("ttl_check_command", None)
+        if "ttl_command" in data and data["ttl_command"] is not None:
+            data["ttl_command"] = _parse_ttl_command(data["ttl_command"])
         for key, value in data.items():
             if hasattr(cfg, key):
                 setattr(cfg, key, value)

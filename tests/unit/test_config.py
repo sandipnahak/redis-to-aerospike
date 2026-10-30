@@ -313,3 +313,16 @@ def test_redis_from_dict_key_pattern_alias():
 def test_redis_from_dict_scan_match_beats_key_pattern():
     cfg = RedisConfig.from_dict({"key_pattern": "a:*", "scan_match": "b:*"})
     assert cfg.scan_match == "b:*"
+
+
+def test_redis_ttl_command_from_dict_and_alias():
+    from redis_to_aerospike.config import TtlCommand
+
+    cfg = RedisConfig.from_dict({"ttl_check_command": "DUMP", "ttl_dump_field": "exp"})
+    assert cfg.ttl_command is TtlCommand.DUMP
+    assert cfg.ttl_dump_field == "exp"
+
+
+def test_redis_ttl_command_rejects_unknown():
+    with pytest.raises(ValueError, match="ttl_command"):
+        RedisConfig.from_dict({"ttl_command": "object"})
