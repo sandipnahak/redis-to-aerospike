@@ -276,6 +276,27 @@ def test_migration_banner_logged_twice_around_run(monkeypatch, caplog):
     assert preview_i < title_indices[0] < title_indices[1] < summary_i
 
 
+def test_render_preflight_fails_ttl_when_dump_and_nsup_disabled():
+    from redis_to_aerospike.config import TtlCommand
+
+    config = cli.build_config(cli.parse_args([]))
+    config.redis.ttl_command = TtlCommand.DUMP
+    text = cli.render_preflight(
+        config,
+        {"keys": 10, "expires": 0},
+        AerospikeServerInfo(namespace="intuitpov", nsup_period=0, max_record_size=1048576),
+    )
+    assert "preflight checks" in text
+    assert "redis ping              : pass" in text
+    assert "aerospike connect       : pass" in text
+    assert "redis key count         : 10" in text
+    assert "redis INFO expires      : 0" in text
+    assert "ttl command             : dump" in text
+    assert "namespace               : intuitpov" in text
+    assert "nsup-period             : 0" in text
+    assert "ttl writes allowed      : fail" in text
+
+
 def test_render_preview_includes_source_target_and_estimate():
     config = cli.build_config(cli.parse_args(["--redis-match", "user:*"]))
     redis_info = {"keys": 100, "expires": 5, "used_memory_human": "2M", "redis_version": "7.2"}

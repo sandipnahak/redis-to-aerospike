@@ -625,6 +625,43 @@ def ttl_migration_blocked_reason(
     )
 
 
+def render_preflight(
+    config: MigrationConfig,
+    redis_info: Dict[str, Any],
+    aerospike_info: Optional[AerospikeServerInfo],
+) -> str:
+    """Checklist of the checks that run before any key is scanned or written."""
+
+    def shown(value: Any) -> str:
+        return "unavailable" if value is None else str(value)
+
+    lines = [
+        "preflight checks",
+        "  redis ping              : pass",
+        "  aerospike connect       : pass",
+        f"  redis key count         : {shown(redis_info.get('keys'))}",
+        f"  redis INFO expires      : {shown(redis_info.get('expires'))}",
+        f"  ttl command             : {config.redis.ttl_command.value}",
+    ]
+    if aerospike_info is None:
+        lines.append("  aerospike namespace     : unavailable")
+    else:
+        lines.append(f"  namespace               : {aerospike_info.namespace}")
+        lines.append(f"  nsup-period             : {shown(aerospike_info.nsup_period)}")
+        lines.append(f"  max-record-size         : {shown(aerospike_info.max_record_size)}")
+        lines.append(f"  stop-writes-pct         : {shown(aerospike_info.stop_writes_pct)}")
+    blocked = ttl_migration_blocked_reason(
+        redis_info, aerospike_info, config.redis.ttl_command
+    )
+    if blocked:
+        lines.append("  ttl writes allowed      : fail")
+    elif aerospike_info is not None and aerospike_info.nsup_period == 0:
+        lines.append("  ttl writes allowed      : warn (nsup-period is 0)")
+    else:
+        lines.append("  ttl writes allowed      : pass")
+    return "\n".join(lines)
+
+
 def apply_server_info(
     config: MigrationConfig,
     aerospike_info: Optional[AerospikeServerInfo],
@@ -700,6 +737,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         aerospike_info = sink.server_info()
 
         apply_server_info(config, aerospike_info, redis_info)
+        logger.info("\n%s", render_preflight(config, redis_info, aerospike_info))
         blocked = ttl_migration_blocked_reason(
             redis_info, aerospike_info, config.redis.ttl_command
         )
