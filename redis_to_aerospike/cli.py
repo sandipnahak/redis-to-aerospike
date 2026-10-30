@@ -13,6 +13,7 @@ from .config import (
     HashStrategy,
     MigrationConfig,
     RecordExistsPolicy,
+    TtlCommand,
     TtlOverflowPolicy,
     _parse_set_routes,
 )
@@ -579,29 +580,48 @@ def render_preview(
     return "\n".join(lines)
 
 
+def _redis_reports_expiring_keys(redis_info: Optional[Dict[str, Any]]) -> bool:
+    expires = (redis_info or {}).get("expires")
+    try:
+        return expires is not None and int(expires) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _run_supplies_expiries(redis_info: Optional[Dict[str, Any]], ttl_command: Optional[TtlCommand]) -> bool:
+    """True when this run is expected to write records that carry a TTL.
+
+    Redis ``INFO keyspace`` misses MemoryDB expiries stored inside the value.
+    ``dump``, ``expiretime``, and ``pexpiretime`` read those absolute timestamps.
+    """
+    if ttl_command in (TtlCommand.DUMP, TtlCommand.EXPIRETIME, TtlCommand.PEXPIRETIME):
+        return True
+    return _redis_reports_expiring_keys(redis_info)
+
+
 def ttl_migration_blocked_reason(
     redis_info: Dict[str, Any],
     aerospike_info: Optional[AerospikeServerInfo],
+    ttl_command: Optional[TtlCommand] = None,
 ) -> Optional[str]:
-    """Return a fatal error message if Redis has expiring keys but Aerospike cannot expire them."""
+    """Return a fatal error message if this run would write TTLs the server rejects."""
     if aerospike_info is None or aerospike_info.nsup_period != 0:
         return None
-    expires = redis_info.get("expires")
-    if expires is None:
-        return None
-    try:
-        n = int(expires)
-    except (TypeError, ValueError):
-        return None
-    if n <= 0:
+    if not _run_supplies_expiries(redis_info, ttl_command):
         return None
     ns = aerospike_info.namespace
+    command = f" ttl_command is {ttl_command.value}." if ttl_command is not None else ""
+    expires = (redis_info or {}).get("expires")
+    redis_part = ""
+    if _redis_reports_expiring_keys(redis_info):
+        redis_part = f" Redis reports {int(expires)} key(s) with an expiry."
     return (
         f"Records with TTL cannot be inserted into Aerospike namespace '{ns}': "
-        "TTL expiration is disabled (nsup-period is 0), so the server will never "
-        f"expire keys by TTL. Redis reports {n} key(s) with an expiry. "
-        "Set a non-zero nsup-period on the Aerospike namespace to enable expiration, "
-        "or migrate only keys without TTL."
+        "TTL expiration is disabled (nsup-period is 0). The server rejects those "
+        "writes with error 22 (AS_ERR_FORBIDDEN)."
+        f"{command}{redis_part} "
+        "Set nsup-period to a non-zero value (for example 120) on the namespace, "
+        "then re-run."
     )
 
 
@@ -622,18 +642,14 @@ def apply_server_info(
     if aerospike_info is None:
         return
 
-    if aerospike_info.nsup_period == 0:
-        expires = (redis_info or {}).get("expires")
-        try:
-            has_ttl_keys = expires is not None and int(expires) > 0
-        except (TypeError, ValueError):
-            has_ttl_keys = False
-        if not has_ttl_keys:
-            logger.warning(
-                "Aerospike namespace '%s' has nsup-period=0 (TTL eviction disabled); "
-                "records written with a TTL will NOT be expired by the server",
-                aerospike_info.namespace,
-            )
+    if aerospike_info.nsup_period == 0 and not _run_supplies_expiries(
+        redis_info, config.redis.ttl_command
+    ):
+        logger.warning(
+            "Aerospike namespace '%s' has nsup-period=0 (TTL eviction disabled); "
+            "a write that sets a TTL is rejected with error 22 (AS_ERR_FORBIDDEN)",
+            aerospike_info.namespace,
+        )
 
     server_max = aerospike_info.max_record_size
     if server_max and server_max > 0:
@@ -684,7 +700,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         aerospike_info = sink.server_info()
 
         apply_server_info(config, aerospike_info, redis_info)
-        blocked = ttl_migration_blocked_reason(redis_info, aerospike_info)
+        blocked = ttl_migration_blocked_reason(
+            redis_info, aerospike_info, config.redis.ttl_command
+        )
         if blocked:
             logger.error("%s", blocked)
             return 2

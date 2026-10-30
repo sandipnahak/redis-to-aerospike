@@ -460,6 +460,13 @@ class AerospikeSink:
             exists_codes = self._record_exists_error_codes()
             if exists_codes and result in exists_codes:
                 return BATCH_RECORD_EXISTS_OUTCOME
+        if result == 22:
+            # AS_ERR_FORBIDDEN. The usual cause in this tool is a positive TTL
+            # written while the namespace has nsup-period 0.
+            return (
+                "BatchError:22:forbidden (TTL write rejected; "
+                "namespace nsup-period is 0)"
+            )
         reason = f"BatchError:{result}"
         if getattr(reply, "in_doubt", False):
             reason += ":in_doubt"

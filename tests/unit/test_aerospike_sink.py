@@ -212,6 +212,15 @@ def test_write_many_default_policy_record_exists_is_plain_batch_error(fake_aeros
     assert results == [f"BatchError:{fake_aerospike.AEROSPIKE_ERR_RECORD_EXISTS}"]
 
 
+def test_write_many_ttl_forbidden_names_result_22(fake_aerospike, fake_aero_client):
+    sink = make_sink(fake_aero_client)
+    fake_aero_client.batch_results = {("test", "redis", "x"): (22, False)}
+    results = sink.write_many([AerospikeRecord(key="x", bins={"value": 1}, ttl_s=60)])
+    assert results == [
+        "BatchError:22:forbidden (TTL write rejected; namespace nsup-period is 0)"
+    ]
+
+
 def test_write_before_connect_raises():
     sink = AerospikeSink(AerospikeConfig())  # no client injected
     with pytest.raises(RuntimeError):

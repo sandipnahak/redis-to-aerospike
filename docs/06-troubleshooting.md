@@ -94,6 +94,27 @@ Generic server-side write failures (timeouts, capacity, cluster issues). Check:
   `--aerospike-total-timeout-ms` if writes are timing out under load.
 - Lowering `--workers` if you're overwhelming the cluster.
 
+## `BatchError:22` on write
+
+Aerospike result code **22** is `AS_ERR_FORBIDDEN`. For this tool it means the
+write set a TTL and the namespace has `nsup-period=0` (expiration disabled,
+the server default). The server rejects that write. It does not store the record.
+
+This shows up after a MemoryDB `ttl_command: dump` run: Redis `INFO` reports no
+expiring keys, but hash field `e` still becomes an Aerospike TTL. Every such key
+fails with `BatchError:22`.
+
+Set a non-zero `nsup-period` on the namespace (for example `120`), then re-run.
+The failed keys were not written. Keys that had no expiry may already be in
+Aerospike; a re-run updates them.
+
+```
+asinfo -v "set-config:context=namespace;id=<namespace>;nsup-period=120"
+```
+
+That change is dynamic, but it does not survive a restart until it is also in
+the namespace configuration file.
+
 ## TTLs are not being expired
 
 If you wrote records with TTLs but the server isn't expiring them, the namespace
@@ -108,13 +129,17 @@ message such as:
 Records with TTL cannot be inserted into Aerospike namespace 'X': TTL eviction is disabled (nsup-period is 0) ...
 ```
 
-If Redis has **no** keys with TTL (or the keyspace stats could not be read), you
-only get a **warning** on connect:
+If Redis has **no** keys with TTL (or the keyspace stats could not be read) and
+`ttl_command` is `pttl` or `ttl`, you only get a **warning** on connect:
 
 ```
-Aerospike namespace 'X' has nsup-period=0 (TTL eviction disabled); records
-written with a TTL will NOT be expired by the server
+Aerospike namespace 'X' has nsup-period=0 (TTL eviction disabled); a write that
+sets a TTL is rejected with error 22 (AS_ERR_FORBIDDEN)
 ```
+
+`ttl_command: dump` (and `expiretime` / `pexpiretime`) abort before writing in
+this situation, because those commands attach an expiry that Redis `INFO` does
+not count. See [`BatchError:22` on write](#batcherror22-on-write).
 
 This is a **server configuration** issue -- an Aerospike administrator must set a
 non-zero `nsup-period` on the namespace for TTL eviction to run.

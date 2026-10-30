@@ -11,7 +11,8 @@ for installs and issue reports, not a formal product release cadence.
 
 ### Fixed
 
-- Reading key expiry no longer fails on Redis-compatible sources that do not implement `PTTL` or `TTL` (Amazon MemoryDB Multi-Region returns `ERR unknown command` for both). Keys are migrated without an expiry unless `redis.ttl_command` selects another source. `dump` reads an absolute expiry from a hash field inside the `DUMP` payload. Types whose read command is also missing, such as lists, are skipped instead of aborting the run.
+- Reading key expiry no longer fails on Redis-compatible sources that do not implement `PTTL` or `TTL` (Amazon MemoryDB Multi-Region returns `ERR unknown command` for both). `redis.ttl_command` selects `pttl`, `ttl`, `dump`, `expiretime`, or `pexpiretime`. `dump` reads an absolute expiry from a hash field inside the `DUMP` payload. Types whose read command is also missing, such as lists, are skipped instead of aborting the run.
+- A write that sets a TTL is rejected with Aerospike error 22 (`AS_ERR_FORBIDDEN`) when the namespace has `nsup-period` 0. `ttl_command` of `dump`, `expiretime`, or `pexpiretime` now stops the run before those writes, because Redis `INFO` does not count expiries stored inside the value.
 
 ## [0.4.0] - 2026-06-29
 

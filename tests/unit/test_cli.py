@@ -404,6 +404,19 @@ def test_ttl_migration_blocked_reason_when_nsup_disabled_and_redis_has_expiring_
     assert "2" in reason
 
 
+def test_ttl_migration_blocked_when_dump_and_nsup_disabled():
+    from redis_to_aerospike.config import TtlCommand
+
+    reason = cli.ttl_migration_blocked_reason(
+        {"expires": 0},
+        AerospikeServerInfo(namespace="ns1", nsup_period=0),
+        TtlCommand.DUMP,
+    )
+    assert reason is not None
+    assert "error 22" in reason
+    assert "dump" in reason
+
+
 def test_ttl_migration_blocked_reason_none_when_nsup_active():
     assert (
         cli.ttl_migration_blocked_reason(
