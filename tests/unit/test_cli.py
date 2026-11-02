@@ -361,7 +361,7 @@ def test_pubsub_exits_when_notify_parameter_is_missing(monkeypatch):
     assert _Runner.ran is False
 
 
-def test_pubsub_continues_when_notify_parameter_cannot_be_read(monkeypatch):
+def test_pubsub_exits_when_notify_parameter_cannot_be_read(monkeypatch):
     stats = MigrationStats()
 
     class _Runner:
@@ -383,8 +383,8 @@ def test_pubsub_continues_when_notify_parameter_cannot_be_read(monkeypatch):
     monkeypatch.setattr(cli, "Migrator", _fake_migrator(stats))
     monkeypatch.setattr(cli, "PubSubRunner", _Runner)
 
-    assert cli.main(["--mode", "pubsub"]) == 0
-    assert _Runner.ran is True
+    assert cli.main(["--mode", "pubsub"]) == 2
+    assert _Runner.ran is False
 
 
 def test_dry_run_skips_migration(monkeypatch):

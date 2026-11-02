@@ -57,6 +57,8 @@ class KeyspaceNotifyConfig:
     flags: str | None = None
     readable: bool = False
     present: bool = False
+    # Server error from a rejected CONFIG GET, when readable is false.
+    detail: str | None = None
 
 
 def notification_db(config: RedisConfig) -> int:
@@ -102,42 +104,23 @@ def coerce_notify_setting(value: Any) -> KeyspaceNotifyConfig:
     return KeyspaceNotifyConfig(flags=str(value), readable=True, present=True)
 
 
-def notification_warning(setting: KeyspaceNotifyConfig, family: str) -> str | None:
-    """Warn when the parameter could not be read. The run still starts.
-
-    ``family`` is unused; it keeps the call shape next to
-    :func:`notification_block_reason`.
-    """
-    del family
-    if setting.readable:
-        return None
-    return (
-        "Could not read notify-keyspace-events. Subscribing anyway. "
-        "On MemoryDB, open the cluster parameter group and set "
-        "notify-keyspace-events to KEA (all keyspace and keyevent "
-        "notifications) or Ex (expired keys only). Ex publishes keyevent "
-        "channels; pass --pubsub-channel keyevent when auto-detect cannot "
-        "read the parameter."
-    )
-
-
 def notification_block_reason(
     setting: KeyspaceNotifyConfig, family: str
 ) -> Optional[str]:
-    """Fatal reason for ``pubsub`` and ``sync`` when notifications are off.
+    """Fatal reason for ``pubsub`` and ``sync`` when notifications are not confirmed.
 
-    A failed ``CONFIG GET`` is not fatal. An answer that omits the parameter,
-    or sets it to empty, or omits the letter for this channel family, means
-    the cluster will publish nothing.
+    ``pubsub`` and ``sync`` exit unless the server returns a value that publishes
+    on ``family``. A rejected ``CONFIG GET``, a missing parameter, and an empty
+    value are the same outcome: the cluster will not deliver events, or we
+    cannot prove that it will.
     """
-    if not setting.readable:
-        return None
-    if not setting.present or not setting.flags:
+    if not setting.readable or not setting.present or not setting.flags:
+        detail = f" ({setting.detail})" if setting.detail else ""
         return (
-            "notify-keyspace-events is not set in the cluster parameter group. "
-            "pubsub and sync exit because the cluster would publish nothing. "
-            "Set it to KEA (all changes) or Ex (expired keys only), apply the "
-            "parameter group, and re-run."
+            "notify-keyspace-events was not found"
+            f"{detail}. pubsub and sync exit because the cluster parameter "
+            "group does not show an active value. Set it to KEA (all changes) "
+            "or Ex (expired keys only), apply the parameter group, and re-run."
         )
     needed = "K" if family == "keyspace" else "E"
     if needed not in set(setting.flags):

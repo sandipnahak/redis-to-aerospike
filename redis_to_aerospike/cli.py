@@ -25,7 +25,6 @@ from .config import (
 from .keyspace import (
     coerce_notify_setting,
     notification_block_reason,
-    notification_warning,
     select_channel_family,
     subscription_pattern,
     notification_db,
@@ -820,9 +819,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 logger.error("%s", blocked_notify)
                 return 2
-            warning = notification_warning(notify, family)
-            if warning:
-                logger.warning("%s", warning)
 
         logger.info(
             "\n%s",

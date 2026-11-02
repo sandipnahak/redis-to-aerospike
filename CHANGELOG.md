@@ -11,7 +11,7 @@ for installs and issue reports, not a formal product release cadence.
 
 ### Changed
 
-- `pubsub` and `sync` exit with code 2 when `notify-keyspace-events` is missing or empty. A failed `CONFIG GET` still warns and continues, because MemoryDB often denies that read while the parameter group is set.
+- `pubsub` and `sync` exit with code 2 when `notify-keyspace-events` is missing, empty, or `CONFIG GET` cannot read it. The previous run continued after that warning and exited 0.
 
 ### Added
 
