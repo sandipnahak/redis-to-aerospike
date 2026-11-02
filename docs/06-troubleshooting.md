@@ -151,8 +151,9 @@ Keyspace notifications are off until the MemoryDB parameter group sets
 expired keys, and only on the keyevent channel.
 
 - The preview line `notify flags` shows the value the tool read. `(empty)`
-  means the parameter is unset. `unreadable` means `CONFIG GET` failed; pass
-  `--pubsub-channel keyevent` for `Ex`, or `keyspace` for `KEA`.
+  or a missing parameter exits `pubsub` and `sync` with code 2. `unreadable`
+  means `CONFIG GET` failed; the run continues. Pass `--pubsub-channel keyevent`
+  for `Ex`, or `keyspace` for `KEA`.
 - MemoryDB is a cluster. The log line `listening for keyspace notifications
   on N node(s)` should list every primary. A standalone client pointed at
   one node only sees that node's keys. Set `--redis-cluster`.

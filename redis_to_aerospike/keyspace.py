@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from .config import PubSubChannel, RedisConfig
@@ -42,6 +42,21 @@ class KeyChange:
     key: str | bytes
     event: str
     action: Action
+
+
+@dataclass(frozen=True)
+class KeyspaceNotifyConfig:
+    """What ``CONFIG GET notify-keyspace-events`` told us.
+
+    ``readable`` is false when the server rejected the command. MemoryDB often
+    does that even though the parameter group is set, so a failed read must not
+    stop ``pubsub`` or ``sync``. ``present`` is false when the command
+    succeeded and the parameter was not in the reply.
+    """
+
+    flags: str | None = None
+    readable: bool = False
+    present: bool = False
 
 
 def notification_db(config: RedisConfig) -> int:
@@ -78,34 +93,62 @@ def subscription_pattern(family: str, db: int) -> str:
     return f"__keyspace@{db}__:*"
 
 
-def notification_warning(flags: str | None, family: str) -> str | None:
-    """Return a user-facing warning when this subscription will hear nothing.
+def coerce_notify_setting(value: Any) -> KeyspaceNotifyConfig:
+    """Accept a :class:`KeyspaceNotifyConfig` or the flags string tests return."""
+    if isinstance(value, KeyspaceNotifyConfig):
+        return value
+    if value is None:
+        return KeyspaceNotifyConfig()
+    return KeyspaceNotifyConfig(flags=str(value), readable=True, present=True)
 
-    ``None`` flags means the server did not answer ``CONFIG GET``. The
-    subscription still starts, because MemoryDB can deny the read while the
-    parameter group is already set.
+
+def notification_warning(setting: KeyspaceNotifyConfig, family: str) -> str | None:
+    """Warn when the parameter could not be read. The run still starts.
+
+    ``family`` is unused; it keeps the call shape next to
+    :func:`notification_block_reason`.
     """
-    needed = "K" if family == "keyspace" else "E"
-    if flags is None:
-        return (
-            "Could not read notify-keyspace-events. Subscribing anyway. "
-            "On MemoryDB, open the cluster parameter group and set "
-            "notify-keyspace-events to KEA (all keyspace and keyevent "
-            "notifications) or Ex (expired keys only). Ex publishes keyevent "
-            "channels; pass --pubsub-channel keyevent when auto-detect cannot "
-            "read the parameter."
-        )
-    if needed in set(flags):
+    del family
+    if setting.readable:
         return None
-    shown = flags if flags else "(empty)"
     return (
-        f"notify-keyspace-events is {shown!r}, which does not publish "
-        f"{family} notifications (the value needs {needed!r}). "
-        "In the MemoryDB console edit the cluster parameter group: KEA logs "
-        "all keyspace and keyevent notifications, Ex logs only expired keys. "
-        "Ex is a keyevent stream, so set pubsub_channel to keyevent or leave "
-        "it on auto once the parameter can be read."
+        "Could not read notify-keyspace-events. Subscribing anyway. "
+        "On MemoryDB, open the cluster parameter group and set "
+        "notify-keyspace-events to KEA (all keyspace and keyevent "
+        "notifications) or Ex (expired keys only). Ex publishes keyevent "
+        "channels; pass --pubsub-channel keyevent when auto-detect cannot "
+        "read the parameter."
     )
+
+
+def notification_block_reason(
+    setting: KeyspaceNotifyConfig, family: str
+) -> Optional[str]:
+    """Fatal reason for ``pubsub`` and ``sync`` when notifications are off.
+
+    A failed ``CONFIG GET`` is not fatal. An answer that omits the parameter,
+    or sets it to empty, or omits the letter for this channel family, means
+    the cluster will publish nothing.
+    """
+    if not setting.readable:
+        return None
+    if not setting.present or not setting.flags:
+        return (
+            "notify-keyspace-events is not set in the cluster parameter group. "
+            "pubsub and sync exit because the cluster would publish nothing. "
+            "Set it to KEA (all changes) or Ex (expired keys only), apply the "
+            "parameter group, and re-run."
+        )
+    needed = "K" if family == "keyspace" else "E"
+    if needed not in set(setting.flags):
+        return (
+            f"notify-keyspace-events is {setting.flags!r}, which does not publish "
+            f"{family} notifications (the value needs {needed!r}). "
+            "Set the MemoryDB parameter group to KEA or Ex. Ex publishes "
+            "keyevent channels, so set pubsub_channel to keyevent or leave it "
+            "on auto."
+        )
+    return None
 
 
 def key_matches(key: str | bytes, pattern: str) -> bool:

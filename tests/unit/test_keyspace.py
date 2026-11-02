@@ -4,8 +4,10 @@ import pytest
 
 from redis_to_aerospike.config import PubSubChannel, RedisConfig
 from redis_to_aerospike.keyspace import (
+    KeyspaceNotifyConfig,
     key_matches,
     normalize_notify_flags,
+    notification_block_reason,
     notification_db,
     notification_warning,
     parse_notification,
@@ -95,16 +97,30 @@ def test_normalize_notify_flags_reads_standalone_and_cluster_replies():
     assert normalize_notify_flags({"timeout": "1"}) is None
 
 
-def test_warning_when_flags_do_not_match_the_family():
-    assert notification_warning("KEA", "keyspace") is None
-    assert notification_warning("Ex", "keyevent") is None
-    empty = notification_warning("", "keyspace")
-    assert empty is not None
-    assert "KEA" in empty
-    assert "Ex" in empty
-    unreadable = notification_warning(None, "keyspace")
-    assert unreadable is not None
-    assert "Could not read" in unreadable
+def test_unreadable_parameter_warns_and_does_not_block():
+    unread = KeyspaceNotifyConfig()
+    warning = notification_warning(unread, "keyspace")
+    assert warning is not None
+    assert "Could not read" in warning
+    assert notification_block_reason(unread, "keyspace") is None
+
+
+def test_missing_parameter_blocks_pubsub_and_sync():
+    missing = KeyspaceNotifyConfig(readable=True, present=False)
+    empty = KeyspaceNotifyConfig(flags="", readable=True, present=True)
+    for setting in (missing, empty):
+        reason = notification_block_reason(setting, "keyspace")
+        assert reason is not None
+        assert "not set" in reason
+        assert notification_warning(setting, "keyspace") is None
+
+
+def test_parameter_without_channel_letter_blocks():
+    setting = KeyspaceNotifyConfig(flags="Ex", readable=True, present=True)
+    assert notification_block_reason(setting, "keyevent") is None
+    reason = notification_block_reason(setting, "keyspace")
+    assert reason is not None
+    assert "Ex" in reason
 
 
 def test_standalone_endpoint_prefers_the_url():

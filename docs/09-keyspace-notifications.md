@@ -31,9 +31,13 @@ With `pubsub_channel: auto` (the default):
 - `KEA` subscribes to `__keyspace@0__:*` (the key is in the channel, the event name is the message).
 - `Ex` subscribes to `__keyevent@0__:*` (the event name is in the channel, the key is the message).
 
-If `CONFIG GET` is not allowed, the tool still subscribes and warns. Point
+If `CONFIG GET` is not allowed, the tool warns and still subscribes. Point
 `--pubsub-channel keyevent` at an `Ex` cluster in that case, or `keyspace`
 at a `KEA` cluster.
+
+If the command succeeds and `notify-keyspace-events` is missing or empty,
+`pubsub` and `sync` exit with code 2 before scanning or subscribing. `scan`
+does not read the parameter.
 
 ## Example configs
 

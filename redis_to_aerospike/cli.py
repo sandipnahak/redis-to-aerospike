@@ -23,6 +23,8 @@ from .config import (
     _parse_set_routes,
 )
 from .keyspace import (
+    coerce_notify_setting,
+    notification_block_reason,
     notification_warning,
     select_channel_family,
     subscription_pattern,
@@ -807,19 +809,25 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         notify_flags = None
         if config.mode is not RunMode.SCAN:
-            notify_flags = source.notify_keyspace_events()
+            notify = coerce_notify_setting(source.notify_keyspace_events())
+            notify_flags = notify.flags
+            family = select_channel_family(notify_flags, config.pubsub_channel)
+            blocked_notify = notification_block_reason(notify, family)
+            if blocked_notify:
+                logger.info(
+                    "\n%s",
+                    render_preview(config, redis_info, aerospike_info, notify_flags),
+                )
+                logger.error("%s", blocked_notify)
+                return 2
+            warning = notification_warning(notify, family)
+            if warning:
+                logger.warning("%s", warning)
 
         logger.info(
             "\n%s",
             render_preview(config, redis_info, aerospike_info, notify_flags),
         )
-        if config.mode is not RunMode.SCAN:
-            warning = notification_warning(
-                notify_flags,
-                select_channel_family(notify_flags, config.pubsub_channel),
-            )
-            if warning:
-                logger.warning("%s", warning)
 
         if args.dry_run:
             logger.info("dry run: no records were written")

@@ -9,6 +9,10 @@ for installs and issue reports, not a formal product release cadence.
 
 ## [Unreleased]
 
+### Changed
+
+- `pubsub` and `sync` exit with code 2 when `notify-keyspace-events` is missing or empty. A failed `CONFIG GET` still warns and continues, because MemoryDB often denies that read while the parameter group is set.
+
 ### Added
 
 - `--mode pubsub` and `--mode sync` follow Redis/MemoryDB keyspace notifications (`notify-keyspace-events`, such as `KEA` or `Ex`) and apply them in Aerospike. Cluster mode subscribes to every primary. See [Keyspace notifications](docs/09-keyspace-notifications.md).

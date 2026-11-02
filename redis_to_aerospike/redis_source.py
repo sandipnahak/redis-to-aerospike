@@ -339,20 +339,21 @@ class RedisSource:
         except Exception:
             pass
 
-    def notify_keyspace_events(self) -> str | None:
-        """Return the server's ``notify-keyspace-events`` value.
+    def notify_keyspace_events(self):
+        """Read ``notify-keyspace-events``. Never raises.
 
-        ``""`` means the parameter was read and notifications are disabled.
-        ``None`` means the command failed or the reply did not contain it
-        (MemoryDB may restrict ``CONFIG GET``). Never raises.
+        A rejected ``CONFIG GET`` is ``readable=False`` (MemoryDB often denies
+        the command while the parameter group is set). A successful reply
+        without the parameter is ``present=False``. An empty value means the
+        parameter group has notifications turned off.
         """
-        from .keyspace import normalize_notify_flags
+        from .keyspace import KeyspaceNotifyConfig, normalize_notify_flags
 
         try:
             raw = self._client.config_get("notify-keyspace-events")
         except Exception as exc:
             logger.debug("could not read notify-keyspace-events: %s", exc)
-            return None
+            return KeyspaceNotifyConfig()
         flags = normalize_notify_flags(raw)
         if isinstance(raw, dict):
             # Cluster replies nest one dict per node. Warn when they disagree
@@ -364,7 +365,9 @@ class RedisSource:
                     "notify-keyspace-events differs across nodes: %s",
                     ", ".join(repr(item) for item in unique),
                 )
-        return flags
+        if flags is None:
+            return KeyspaceNotifyConfig(readable=True, present=False)
+        return KeyspaceNotifyConfig(flags=flags, readable=True, present=True)
 
     def read_record(self, key: str | bytes) -> RedisRecord | None:
         """Read one key the same way a SCAN batch does.
