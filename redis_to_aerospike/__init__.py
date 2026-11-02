@@ -8,6 +8,7 @@ and extend:
 * ``transforms``     -- optional post-conversion hooks (the data-modeling seam).
 * ``aerospike_sink`` -- writes records into Aerospike (the consumer side).
 * ``migrator``       -- a multi-threaded producer/consumer pipeline tying it together.
+* ``pubsub_sync``    -- follows Redis/MemoryDB keyspace notifications.
 """
 
 from .version import __version__

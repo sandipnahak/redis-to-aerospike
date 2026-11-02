@@ -17,6 +17,11 @@ is the full Redis key and ``set`` comes from ``--aerospike-set``.
 - **Native Aerospike types** — Migrates Redis strings, hashes, lists, sets, and
   sorted sets (plus TTLs) into appropriate bins, lists, and maps; unsupported types
   (e.g. Streams) are skipped and counted in the summary.
+- **Keyspace notifications** — `--mode pubsub` follows MemoryDB/Redis
+  `notify-keyspace-events` (for example `KEA` or `Ex`) and applies each change.
+  `--mode sync` scans first, then follows. Cluster mode subscribes to every
+  primary, because those events stay on the node that owns the key. See
+  [Keyspace notifications](docs/09-keyspace-notifications.md).
 - **Multithreaded pipeline** — A producer streams `SCAN` results into a **bounded
   queue**; a pool of **worker threads** (default 8, `--workers`) converts and writes
   in parallel so the run stays fast without loading the whole keyspace into memory.
@@ -210,7 +215,8 @@ You can configure the tool three ways, and mix them:
 - **CLI flags** -- e.g. `--redis-host`, `--workers`. Best for one-off runs.
 - **A YAML file** -- pass it with `--config myconfig.yaml`. The YAML is the base;
   any CLI flag you also pass overrides the matching value. See
-  [`config.example.yaml`](config.example.yaml) for an annotated template.
+  [`config.example.yaml`](config.example.yaml) for an annotated template, and
+  [`examples/`](examples) for ready-to-run `scan`, `pubsub`, and `sync` configs.
 - **Environment variables** -- `REDIS_*`, `AEROSPIKE_*`, `MIGRATION_*`. Best for
   secrets and containers.
 

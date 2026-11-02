@@ -21,6 +21,7 @@ class FakeAerospikeClient:
         self.puts = []      # list of (key, bins, policy)
         self.operates = []  # list of (key, ops, policy)
         self.batches = []   # list of submitted BatchRecords
+        self.removes = []   # list of key tuples
         self.closed = False
         # Optional hook: maps a Write's key tuple -> (result_code, in_doubt).
         # Keys absent from this map default to success (result 0).
@@ -41,6 +42,9 @@ class FakeAerospikeClient:
             write.result = result
             write.in_doubt = in_doubt
         return batch_records
+
+    def remove(self, key, policy=None):
+        self.removes.append(key)
 
     def close(self):
         self.closed = True

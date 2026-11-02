@@ -63,6 +63,10 @@ class AerospikeRecord:
     bin_policies: Dict[str, BinWritePolicy] = field(default_factory=dict)
     # When set, overrides :attr:`AerospikeConfig.set_name` for this write only.
     set_name: Optional[str] = None
+    # Replace the whole Aerospike record on write. Pub/sub snapshots set this so
+    # a removed hash field does not leave a stale bin behind. ``create_only``
+    # still refuses to overwrite an existing record.
+    full_replace: bool = False
 
     def policy_for(self, bin_name: str) -> BinWritePolicy:
         return self.bin_policies.get(bin_name, BinWritePolicy.PUT)

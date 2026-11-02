@@ -6,7 +6,12 @@ import pytest
 from redis.exceptions import RedisError
 
 from redis_to_aerospike.config import RedisConfig, TtlCommand
-from redis_to_aerospike.redis_source import RedisConnection, RedisSource, redis_client_params
+from redis_to_aerospike.redis_source import (
+    RedisConnection,
+    RedisSource,
+    open_node_client,
+    redis_client_params,
+)
 
 
 @pytest.fixture
@@ -122,6 +127,54 @@ def test_decode_key_binary_stays_bytes():
 
 
 # --- end-to-end iteration over a fake server -------------------------------
+
+def test_read_record_returns_one_key(source, fake_redis):
+    fake_redis.set("k", b"v")
+    record = source.read_record("k")
+    assert record is not None
+    assert record.key == "k"
+    assert record.type == "string"
+    assert record.value == b"v"
+
+
+def test_read_record_missing_is_none(source):
+    assert source.read_record("missing") is None
+
+
+def test_open_node_client_targets_one_primary():
+    client = open_node_client(
+        RedisConfig(password="s", ssl=True, cluster=True, db=3),
+        "10.0.0.8",
+        6380,
+    )
+    try:
+        kw = client.connection_pool.connection_kwargs
+        assert kw["host"] == "10.0.0.8"
+        assert kw["port"] == 6380
+        assert kw["password"] == "s"
+        assert client.connection_pool.connection_class.__name__ == "SSLConnection"
+        assert kw["db"] == 0
+        assert kw["socket_timeout"] is None
+    finally:
+        client.close()
+
+
+def test_open_node_client_takes_tls_credentials_from_the_url():
+    client = open_node_client(
+        RedisConfig(url="rediss://alice:secret@cfg.example:6379/2", cluster=True),
+        "10.0.0.4",
+        6379,
+    )
+    try:
+        kw = client.connection_pool.connection_kwargs
+        assert kw["host"] == "10.0.0.4"
+        assert kw["username"] == "alice"
+        assert kw["password"] == "secret"
+        assert client.connection_pool.connection_class.__name__ == "SSLConnection"
+        assert kw["db"] == 0
+    finally:
+        client.close()
+
 
 def test_materializes_each_type(source, fake_redis):
     fake_redis.set("s", "hello")

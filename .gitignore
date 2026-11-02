@@ -22,3 +22,10 @@ htmlcov/
 pytest*.log
 *.log
 .cursor/
+issues.md
+
+redis2aerospike.egg-info
+redis2aerospike.egg-info/*
+redis_to_aerospike/__pycache__
+redis_to_aerospike/__pycache__/*
+*.pyc

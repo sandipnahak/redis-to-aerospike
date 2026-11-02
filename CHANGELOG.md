@@ -11,6 +11,7 @@ for installs and issue reports, not a formal product release cadence.
 
 ### Added
 
+- `--mode pubsub` and `--mode sync` follow Redis/MemoryDB keyspace notifications (`notify-keyspace-events`, such as `KEA` or `Ex`) and apply them in Aerospike. Cluster mode subscribes to every primary. See [Keyspace notifications](docs/09-keyspace-notifications.md).
 - [nsup-period](docs/08-nsup-period.md) explains the namespace supervisor, the per-node preflight check, and how to set `nsup-period` on every node.
 
 ### Fixed

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import signal
+import threading
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import shtab
 
@@ -12,15 +15,25 @@ from .aerospike_sink import AerospikeServerInfo, AerospikeSink
 from .config import (
     HashStrategy,
     MigrationConfig,
+    PubSubChannel,
     RecordExistsPolicy,
+    RunMode,
     TtlCommand,
     TtlOverflowPolicy,
     _parse_set_routes,
 )
+from .keyspace import (
+    notification_warning,
+    select_channel_family,
+    subscription_pattern,
+    notification_db,
+)
 from .converters.registry import ConverterRegistry
 from .log_banners import log_migration_banner
 from .migrator import Migrator
+from .pubsub_sync import PubSubRunner
 from .redis_source import RedisSource
+from .stats import MigrationStats
 from .version import __version__
 
 logger = logging.getLogger("redis_to_aerospike.cli")
@@ -75,6 +88,9 @@ _ARG_MAP: Dict[str, _CLIArgBinding] = {
     "hash_strategy": (None, "hash_strategy", HashStrategy),
     "ttl_overflow_policy": (None, "ttl_overflow_policy", TtlOverflowPolicy),
     "progress_interval": (None, "progress_interval", None),
+    "mode": (None, "mode", RunMode),
+    "pubsub_channel": (None, "pubsub_channel", PubSubChannel),
+    "pubsub_refresh": (None, "pubsub_refresh_s", None),
 }
 
 
@@ -323,6 +339,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     pipeline = parser.add_argument_group("Pipeline")
+    pipeline.add_argument(
+        "--mode",
+        choices=[mode.value for mode in RunMode],
+        default=sup,
+        help="scan once (default), pubsub (follow notify-keyspace-events), "
+        "or sync (scan, then follow)",
+    )
+    pipeline.add_argument(
+        "--pubsub-channel",
+        choices=[channel.value for channel in PubSubChannel],
+        default=sup,
+        help="notification family: auto (default; KEA -> keyspace, Ex -> keyevent), "
+        "keyspace, or keyevent",
+    )
+    pipeline.add_argument(
+        "--pubsub-refresh",
+        type=float,
+        default=sup,
+        help="seconds between cluster primary rediscovery in pub/sub mode; "
+        "0 subscribes once (default: 30)",
+    )
     pipeline.add_argument("--workers", type=int, default=sup, help="default: 8")
     pipeline.add_argument("--scan-batch", type=int, default=sup, help="default: 500")
     pipeline.add_argument("--queue-size", type=int, default=sup, help="default: 10000")
@@ -482,6 +519,7 @@ def render_preview(
     config: MigrationConfig,
     redis_info: Dict[str, Any],
     aerospike_info: Optional[AerospikeServerInfo],
+    notify_flags: Optional[str] = None,
 ) -> str:
     """Build the human-readable pre-run preview block.
 
@@ -563,6 +601,7 @@ def render_preview(
     lines.extend(
         [
             "  pipeline:",
+            f"    run mode    : {config.mode.value}",
             f"    workers     : {config.workers}",
             f"    scan batch  : {config.scan_batch}",
             f"    queue size  : {config.queue_size}",
@@ -576,6 +615,21 @@ def render_preview(
             f"    progress interval : {config.progress_interval}s",
         ]
     )
+    if config.mode is not RunMode.SCAN:
+        family = select_channel_family(notify_flags, config.pubsub_channel)
+        pattern = subscription_pattern(family, notification_db(config.redis))
+        where = "each cluster primary" if config.redis.cluster else "the source"
+        shown = "unreadable" if notify_flags is None else (notify_flags or "(empty)")
+        refresh = (
+            f"{config.pubsub_refresh_s:g}s" if config.pubsub_refresh_s > 0 else "off"
+        )
+        lines.extend(
+            [
+                f"    pubsub      : {family} {pattern} on {where}",
+                f"    notify flags : {shown}",
+                f"    pubsub refresh : {refresh}",
+            ]
+        )
     lines.append(estimate_line)
     return "\n".join(lines)
 
@@ -751,15 +805,46 @@ def main(argv: Optional[List[str]] = None) -> int:
             logger.error("%s", blocked)
             return 2
 
-        logger.info("\n%s", render_preview(config, redis_info, aerospike_info))
+        notify_flags = None
+        if config.mode is not RunMode.SCAN:
+            notify_flags = source.notify_keyspace_events()
+
+        logger.info(
+            "\n%s",
+            render_preview(config, redis_info, aerospike_info, notify_flags),
+        )
+        if config.mode is not RunMode.SCAN:
+            warning = notification_warning(
+                notify_flags,
+                select_channel_family(notify_flags, config.pubsub_channel),
+            )
+            if warning:
+                logger.warning("%s", warning)
 
         if args.dry_run:
             logger.info("dry run: no records were written")
             return 0
 
         log_migration_banner(logger)
-        migrator = Migrator(config, source, registry, sink)
-        stats = migrator.run()
+        stats = MigrationStats()
+        if config.mode is not RunMode.PUBSUB:
+            stats = Migrator(config, source, registry, sink, stats=stats).run()
+        if config.mode is not RunMode.SCAN:
+            if config.mode is RunMode.SYNC:
+                logger.info(
+                    "initial scan finished; following keyspace notifications. "
+                    "Changes published during the scan are not replayed."
+                )
+            stop = threading.Event()
+            with _stop_on_signal(stop):
+                stats = PubSubRunner(
+                    config,
+                    source,
+                    registry,
+                    sink,
+                    stats=stats,
+                    notify_flags=notify_flags,
+                ).run(stop)
         log_migration_banner(logger)
     finally:
         source.close()
@@ -771,6 +856,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     logger.info("\n%s", report)
     return 0
+
+
+@contextmanager
+def _stop_on_signal(stop: threading.Event) -> Iterator[None]:
+    """First interrupt asks the pub/sub loop to finish; a second one aborts."""
+
+    def handler(signum: int, frame: Any) -> None:
+        if stop.is_set():
+            raise KeyboardInterrupt
+        logger.info("shutting down pub/sub listener (interrupt again to abort)")
+        stop.set()
+
+    previous = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[sig] = signal.signal(sig, handler)
+        except ValueError:
+            # signal() is only allowed on the main thread.
+            pass
+    try:
+        yield
+    finally:
+        for sig, old in previous.items():
+            signal.signal(sig, old)
 
 
 if __name__ == "__main__":

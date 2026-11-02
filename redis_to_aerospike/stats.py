@@ -13,7 +13,11 @@ class MigrationStats:
     """Counts and timing for a migration run. Safe to update from many threads."""
 
     scanned: int = 0
+    # Keyspace notifications observed in pub/sub mode (0 during a scan-only run).
+    events: int = 0
     migrated: int = 0
+    # Aerospike records removed because Redis deleted, expired, or evicted the key.
+    deleted: int = 0
     skipped: int = 0
     errors: int = 0
     # skip/error breakdown keyed by reason/type for quick diagnostics.
@@ -32,13 +36,28 @@ class MigrationStats:
         with self._lock:
             self.finished_at = time.monotonic()
 
+    def resume(self) -> None:
+        """Keep the clock running across a scan followed by a pub/sub tail."""
+        with self._lock:
+            if self.started_at is None:
+                self.started_at = time.monotonic()
+            self.finished_at = None
+
     def record_scanned(self, n: int = 1) -> None:
         with self._lock:
             self.scanned += n
 
+    def record_event(self, n: int = 1) -> None:
+        with self._lock:
+            self.events += n
+
     def record_migrated(self, n: int = 1) -> None:
         with self._lock:
             self.migrated += n
+
+    def record_deleted(self, n: int = 1) -> None:
+        with self._lock:
+            self.deleted += n
 
     def record_skipped(self, reason: str) -> None:
         with self._lock:
@@ -60,12 +79,13 @@ class MigrationStats:
     @property
     def throughput(self) -> float:
         elapsed = self.elapsed_s
-        return self.migrated / elapsed if elapsed > 0 else 0.0
+        applied = self.migrated + self.deleted
+        return applied / elapsed if elapsed > 0 else 0.0
 
     def summary(self) -> str:
         return (
-            f"scanned={self.scanned} migrated={self.migrated} "
-            f"skipped={self.skipped} errors={self.errors} "
+            f"scanned={self.scanned} events={self.events} migrated={self.migrated} "
+            f"deleted={self.deleted} skipped={self.skipped} errors={self.errors} "
             f"elapsed={self.elapsed_s:.2f}s throughput={self.throughput:.0f}/s"
         )
 
@@ -73,10 +93,12 @@ class MigrationStats:
         """A compact one-line snapshot for the periodic progress heartbeat."""
         with self._lock:
             scanned, migrated = self.scanned, self.migrated
+            events, deleted = self.events, self.deleted
             skipped, errors = self.skipped, self.errors
         return (
-            f"progress: scanned={scanned} migrated={migrated} "
-            f"skipped={skipped} errors={errors} throughput={self.throughput:.0f}/s"
+            f"progress: scanned={scanned} events={events} migrated={migrated} "
+            f"deleted={deleted} skipped={skipped} errors={errors} "
+            f"throughput={self.throughput:.0f}/s"
         )
 
     def format_report(self) -> str:
@@ -88,6 +110,7 @@ class MigrationStats:
         """
         with self._lock:
             scanned, migrated = self.scanned, self.migrated
+            events, deleted = self.events, self.deleted
             skipped, errors = self.skipped, self.errors
             skipped_by_type = dict(self.skipped_by_type)
             errors_by_type = dict(self.errors_by_type)
@@ -95,7 +118,9 @@ class MigrationStats:
         lines = [
             "migration summary",
             f"  scanned    : {scanned}",
+            f"  events     : {events}",
             f"  migrated   : {migrated}",
+            f"  deleted    : {deleted}",
             f"  skipped    : {skipped}",
             f"  errors     : {errors}",
             f"  elapsed    : {self.elapsed_s:.2f}s",

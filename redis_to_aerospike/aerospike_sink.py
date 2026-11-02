@@ -317,7 +317,12 @@ class AerospikeSink:
         aerospike = self._aero()
         policy: Dict[str, Any] = {"ttl": record.ttl_s if record.ttl_s is not None else 0}
         mode = self._config.record_exists_policy
-        if mode is RecordExistsPolicy.UPDATE:
+        # A pub/sub snapshot is the whole Redis value. Replacing the record
+        # drops bins that Redis no longer has (a hash field removed under
+        # field_bins, for example). create_only still refuses that overwrite.
+        if record.full_replace and mode is not RecordExistsPolicy.CREATE_ONLY:
+            policy["exists"] = aerospike.POLICY_EXISTS_CREATE_OR_REPLACE
+        elif mode is RecordExistsPolicy.UPDATE:
             policy["exists"] = aerospike.POLICY_EXISTS_IGNORE
         elif mode is RecordExistsPolicy.REPLACE:
             policy["exists"] = aerospike.POLICY_EXISTS_CREATE_OR_REPLACE
@@ -438,6 +443,32 @@ class AerospikeSink:
             ):
                 raise RecordAlreadyExists from exc
             raise
+
+    def remove(self, key: str | bytes, set_name: Optional[str] = None) -> None:
+        """Delete one Aerospike record. A missing record is not an error.
+
+        Pub/sub uses this for Redis ``del``, ``expired``, and ``evicted``.
+        """
+        if self._client is None:
+            raise RuntimeError("AerospikeSink is not connected; call connect() first")
+        key_tuple = (self._config.namespace, set_name or self._config.set_name, key)
+        try:
+            self._client.remove(key_tuple)
+        except Exception as exc:
+            if self._is_not_found(exc):
+                return
+            raise
+
+    @staticmethod
+    def _is_not_found(exc: BaseException) -> bool:
+        """True when Aerospike reports the record is already gone."""
+        if type(exc).__name__ in {"RecordNotFound", "KeyNotFoundError"}:
+            return True
+        code = getattr(exc, "code", None)
+        try:
+            return code is not None and int(code) == 2
+        except (TypeError, ValueError):
+            return False
 
     def write_many(self, records: List[AerospikeRecord]) -> List[Optional[str]]:
         """Persist a batch of records via a single ``batch_write`` round-trip.

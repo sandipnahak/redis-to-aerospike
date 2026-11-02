@@ -42,6 +42,38 @@ def test_write_uses_record_level_set_name(fake_aero_client):
     assert bins == {"value": 1}
 
 
+def test_full_replace_uses_create_or_replace(fake_aerospike, fake_aero_client):
+    make_sink(fake_aero_client).write(
+        AerospikeRecord(key="k", bins={"value": 1}, ttl_s=1, full_replace=True)
+    )
+    _, _, policy = fake_aero_client.puts[0]
+    assert policy == _expect_policy(fake_aerospike, 1, exists="cor")
+
+
+def test_full_replace_does_not_override_create_only(fake_aerospike, fake_aero_client):
+    make_sink(fake_aero_client, record_exists_policy=RecordExistsPolicy.CREATE_ONLY).write(
+        AerospikeRecord(key="k", bins={"value": 1}, full_replace=True)
+    )
+    _, _, policy = fake_aero_client.puts[0]
+    assert policy == _expect_policy(fake_aerospike, 0, exists="create")
+
+
+def test_remove_deletes_the_routed_set(fake_aero_client):
+    make_sink(fake_aero_client).remove("1", set_name="users")
+    assert fake_aero_client.removes == [("test", "users", "1")]
+
+
+def test_remove_missing_record_is_success(fake_aero_client):
+    class Missing(Exception):
+        code = 2
+
+    def remove(key, policy=None):
+        raise Missing()
+
+    fake_aero_client.remove = remove
+    make_sink(fake_aero_client).remove("gone")
+
+
 def test_plain_record_uses_put_with_key_bins_and_ttl(fake_aerospike, fake_aero_client):
     sink = make_sink(fake_aero_client)
 

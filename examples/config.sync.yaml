@@ -1,0 +1,55 @@
+# Copy the keyspace, then keep Aerospike current from keyspace notifications.
+#
+#   redis2aerospike --config examples/config.sync.yaml
+#
+# The scan finishes before the subscription starts. Changes published during
+# that scan are not replayed. Pause writers across the cutover if that window
+# matters.
+#
+# MemoryDB parameter group notify-keyspace-events:
+#   KEA  follow every change after the scan
+#   Ex   after the scan, only delete Aerospike records whose Redis key expired
+# pubsub_channel: auto selects the matching channel family.
+
+mode: sync
+pubsub_channel: auto
+pubsub_refresh_s: 30
+
+redis:
+  host: clustercfg.example.memorydb.amazonaws.com
+  port: 6379
+  cluster: true
+  username: app
+  password: null
+  ssl: true
+  # Limits both the initial SCAN and the notifications that follow.
+  scan_match: "*"
+  ttl_command: pttl
+  # MemoryDB Multi-Region stores expiry inside the value instead of PTTL:
+  # ttl_command: dump
+  # ttl_dump_field: e
+
+aerospike:
+  host: aerospike.example
+  port: 3000
+  namespace: test
+  set_name: redis
+  value_bin: value
+  record_exists_policy: replace
+  set_routes:
+    - pattern: "user:*"
+      destination: users
+    - pattern: "session:*"
+      destination: sessions
+
+workers: 8
+scan_batch: 500
+queue_size: 10000
+# Throttle the initial copy. The same write limit applies to the tail.
+scan_rate_limit: 5000
+write_rate_limit: 2000
+# Used by the scan only. The tail writes one record at a time.
+write_batch_size: 100
+hash_strategy: map_bin
+ttl_overflow_policy: reject
+progress_interval: 10

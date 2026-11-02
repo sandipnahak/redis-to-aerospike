@@ -166,6 +166,64 @@ def redis_client_params(config: RedisConfig):
     return config.cluster, None, kwargs
 
 
+def open_node_client(config: RedisConfig, host: str, port: int) -> redis.Redis:
+    """Open a standalone client to one node for keyspace pub/sub.
+
+    Cluster keyspace notifications are generated on the primary that owns the
+    key and are not forwarded to other nodes. Each primary therefore needs its
+    own subscription. Credentials and TLS follow ``config``; ``host`` and
+    ``port`` select the node. Cluster mode always uses database 0.
+    """
+    from urllib.parse import unquote, urlparse
+
+    _cluster, url, kwargs = redis_client_params(config)
+    params = dict(kwargs)
+    params["host"] = host
+    params["port"] = int(port)
+    params["decode_responses"] = False
+    # ``PubSub.get_message(timeout=...)`` waits on its own. A socket timeout
+    # on the client turns a quiet period into a timeout error.
+    params["socket_timeout"] = None
+    if url:
+        parsed = urlparse(url)
+        if parsed.username:
+            params["username"] = unquote(parsed.username)
+        if parsed.password:
+            params["password"] = unquote(parsed.password)
+        if parsed.scheme == "rediss":
+            params["ssl"] = True
+        db = config.db
+        if parsed.path not in ("", "/"):
+            db = int(parsed.path.strip("/"))
+        params["db"] = 0 if config.cluster else db
+    else:
+        params["db"] = 0 if config.cluster else config.db
+    return redis.Redis(**params)
+
+
+def _notify_values(raw: Any) -> list[str]:
+    """Flatten every ``notify-keyspace-events`` string in a CONFIG GET reply."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            name = key.decode("utf-8", "replace") if isinstance(key, bytes) else str(key)
+            if name == "notify-keyspace-events" and not isinstance(value, dict):
+                if isinstance(value, bytes):
+                    found.append(value.decode("utf-8", "replace"))
+                elif value is None:
+                    found.append("")
+                else:
+                    found.append(str(value))
+            elif isinstance(value, dict):
+                walk(value)
+
+    walk(raw)
+    return found
+
+
 class RedisSource:
     """Streams :class:`RedisRecord` objects from a Redis instance."""
 
@@ -280,6 +338,59 @@ class RedisSource:
             self._client.close()
         except Exception:
             pass
+
+    def notify_keyspace_events(self) -> str | None:
+        """Return the server's ``notify-keyspace-events`` value.
+
+        ``""`` means the parameter was read and notifications are disabled.
+        ``None`` means the command failed or the reply did not contain it
+        (MemoryDB may restrict ``CONFIG GET``). Never raises.
+        """
+        from .keyspace import normalize_notify_flags
+
+        try:
+            raw = self._client.config_get("notify-keyspace-events")
+        except Exception as exc:
+            logger.debug("could not read notify-keyspace-events: %s", exc)
+            return None
+        flags = normalize_notify_flags(raw)
+        if isinstance(raw, dict):
+            # Cluster replies nest one dict per node. Warn when they disagree
+            # so a partial parameter-group rollout is visible.
+            values = _notify_values(raw)
+            unique = list(dict.fromkeys(values))
+            if len(unique) > 1:
+                logger.warning(
+                    "notify-keyspace-events differs across nodes: %s",
+                    ", ".join(repr(item) for item in unique),
+                )
+        return flags
+
+    def read_record(self, key: str | bytes) -> RedisRecord | None:
+        """Read one key the same way a SCAN batch does.
+
+        ``None`` means the key is gone. A record whose ``value`` is ``None``
+        means the type is known but this source cannot read it (for example a
+        list on a server without ``LRANGE``); callers must not write that as
+        an empty value.
+        """
+        raw = key if isinstance(key, bytes) else key.encode("utf-8")
+        types, ttls = self._fetch_types_and_ttls([raw])
+        key_type = types.get(raw, "none")
+        if key_type == "none":
+            return None
+        decoded = self._decode_key(raw)
+        if not self._read_supported(key_type):
+            return RedisRecord(key=decoded, type=key_type, value=None, ttl_ms=None)
+        values = self._fetch_values([raw], types)
+        if raw not in values or self._is_vanished(key_type, values[raw]):
+            return None
+        return RedisRecord(
+            key=decoded,
+            type=key_type,
+            value=values[raw],
+            ttl_ms=ttls.get(raw),
+        )
 
     def iter_records(self, batch_size: int = 500) -> Iterator[RedisRecord]:
         """Yield every key in the configured keyspace as a :class:`RedisRecord`."""

@@ -144,6 +144,23 @@ Here, almost all failures are oversized records -- focus there rather than the
 3 transient write errors. Re-run after addressing the dominant cause; re-runs are
 idempotent (see [Running it more than once](04-transferring-data.md#running-it-more-than-once-idempotency)).
 
+## Pub/sub mode hears nothing
+
+Keyspace notifications are off until the MemoryDB parameter group sets
+`notify-keyspace-events`. `KEA` publishes every change; `Ex` publishes only
+expired keys, and only on the keyevent channel.
+
+- The preview line `notify flags` shows the value the tool read. `(empty)`
+  means the parameter is unset. `unreadable` means `CONFIG GET` failed; pass
+  `--pubsub-channel keyevent` for `Ex`, or `keyspace` for `KEA`.
+- MemoryDB is a cluster. The log line `listening for keyspace notifications
+  on N node(s)` should list every primary. A standalone client pointed at
+  one node only sees that node's keys. Set `--redis-cluster`.
+- The subscription has to stay up. Pub/sub does not keep events from before
+  it connected, or from a gap while a primary failed over.
+- `--redis-match` drops notifications whose key does not match. Those show
+  up as skipped `match`.
+
 ## Still stuck?
 
 Run with `--log-level DEBUG` for per-record detail (including skipped keys and

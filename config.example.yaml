@@ -2,6 +2,11 @@
 #
 # Pass it with:  redis2aerospike --config config.example.yaml
 #
+# Shorter mode-specific examples:
+#   examples/config.scan.yaml    one-shot copy
+#   examples/config.pubsub.yaml  MemoryDB keyspace notifications only
+#   examples/config.sync.yaml    scan, then follow notifications
+#
 # The file is OPTIONAL. When provided it is the BASE configuration; any flag you
 # also pass on the command line overrides the matching value here. Every key is
 # optional too -- anything you omit falls back to the built-in default shown in
@@ -124,3 +129,12 @@ write_batch_size: 1
 hash_strategy: map_bin     # map_bin | field_bins
 ttl_overflow_policy: reject  # reject | clamp | never_expire
 progress_interval: 10.0    # seconds between progress lines; 0 disables
+
+# scan copies the keyspace once (default). pubsub follows notify-keyspace-events
+# until interrupted. sync scans, then follows. On MemoryDB set the cluster
+# parameter group notify-keyspace-events to KEA (all changes) or Ex (expired
+# keys only). Ex is a keyevent stream; auto selects that when the parameter
+# can be read. Cluster mode subscribes to every primary.
+# mode: scan                 # scan | pubsub | sync
+# pubsub_channel: auto       # auto | keyspace | keyevent
+# pubsub_refresh_s: 30       # rediscover primaries; 0 subscribes once

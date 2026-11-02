@@ -1,0 +1,54 @@
+# Follow MemoryDB/Redis keyspace notifications until interrupted.
+#
+#   redis2aerospike --config examples/config.pubsub.yaml
+#
+# Does not copy keys that already exist. Use examples/config.sync.yaml for a
+# scan followed by this tail.
+#
+# On the MemoryDB cluster parameter group set notify-keyspace-events to:
+#   KEA  all writes, deletes, expires, and evictions (keyspace channels)
+#   Ex   expired keys only (keyevent channels)
+# pubsub_channel: auto picks keyspace for KEA and keyevent for Ex.
+# If CONFIG GET cannot be read, set pubsub_channel yourself:
+#   keyspace for KEA, keyevent for Ex.
+
+mode: pubsub
+pubsub_channel: auto
+# How often to rediscover cluster primaries after a failover. 0 subscribes once.
+pubsub_refresh_s: 30
+
+redis:
+  # MemoryDB configuration endpoint. Cluster mode uses database 0.
+  host: clustercfg.example.memorydb.amazonaws.com
+  port: 6379
+  cluster: true
+  username: app
+  password: null
+  ssl: true
+  # Applied to notifications the same way SCAN MATCH filters a scan.
+  scan_match: "*"
+  ttl_command: pttl
+
+aerospike:
+  host: aerospike.example
+  port: 3000
+  namespace: test
+  set_name: redis
+  value_bin: value
+  # Each notification rewrites the whole record so removed hash fields do not
+  # linger. create_only still refuses to overwrite an existing record.
+  record_exists_policy: replace
+  # set_routes:
+  #   - pattern: "user:*"
+  #     destination: users
+
+# Events for one key stay on one worker. workers is how many keys are applied
+# at once. write_batch_size is ignored in pub/sub mode.
+workers: 8
+queue_size: 10000
+# Caps how fast notifications are applied, and how fast Aerospike is written.
+scan_rate_limit: 0
+write_rate_limit: 0
+hash_strategy: map_bin
+ttl_overflow_policy: reject
+progress_interval: 10

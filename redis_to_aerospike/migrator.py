@@ -84,6 +84,34 @@ class Migrator:
             capacity=max(config.write_rate_limit, self._batch_size),
         )
 
+    def write_redis_record(self, record: RedisRecord, *, full_replace: bool = False) -> bool:
+        """Convert and write one Redis key. False means the key was skipped.
+
+        Pub/sub passes ``full_replace`` so the Aerospike record matches the
+        value just read from Redis, including hash fields that were removed.
+        """
+        prepared = self._prepare(record)
+        if prepared is None:
+            return False
+        prepared.full_replace = full_replace
+        self._write_one(prepared, record.key)
+        return True
+
+    def delete_key(self, key: str | bytes) -> None:
+        """Remove the Aerospike record that ``key`` maps to, including set routes."""
+        remove = getattr(self._sink, "remove", None)
+        if remove is None:
+            raise RuntimeError("sink does not support remove")
+        resolution = self._set_router.resolve(key)
+        try:
+            self._write_limiter.acquire(1)
+            remove(resolution.key, resolution.set_name)
+        except Exception as exc:
+            self.stats.record_error(f"delete:{type(exc).__name__}")
+            logger.warning("delete failed for key '%s': %s", key, exc)
+            return
+        self.stats.record_deleted()
+
     def run(self) -> MigrationStats:
         self.stats.start()
         progress = ProgressReporter(self.stats, self._config.progress_interval).start()

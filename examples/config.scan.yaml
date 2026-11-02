@@ -1,0 +1,45 @@
+# One-shot copy of the Redis keyspace into Aerospike.
+#
+#   redis2aerospike --config examples/config.scan.yaml
+#
+# mode: scan reads every matching key once and exits. It does not follow
+# later writes. Omit any key to keep the built-in default.
+
+mode: scan
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  cluster: false
+  # username: app
+  # password: set-me
+  ssl: false
+  # Only these keys are read. "*" is the whole database.
+  scan_match: "*"
+  # pttl | ttl | expiretime | pexpiretime | dump
+  ttl_command: pttl
+
+aerospike:
+  host: localhost
+  port: 3000
+  namespace: test
+  set_name: redis
+  value_bin: value
+  # update (merge) | replace | create_only
+  record_exists_policy: update
+  # set_routes:
+  #   - pattern: "user:*"
+  #     destination: users
+  #   - pattern: "session:*"
+  #     destination: sessions
+
+workers: 8
+scan_batch: 500
+queue_size: 10000
+scan_rate_limit: 0
+write_rate_limit: 0
+write_batch_size: 100
+hash_strategy: map_bin
+ttl_overflow_policy: reject
+progress_interval: 10

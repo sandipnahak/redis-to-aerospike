@@ -235,6 +235,104 @@ def test_main_returns_0_on_success(monkeypatch):
     assert cli.main([]) == 0
 
 
+def test_build_config_maps_pubsub_mode():
+    config = cli.build_config(
+        cli.parse_args(
+            ["--mode", "pubsub", "--pubsub-channel", "keyevent", "--pubsub-refresh", "0"]
+        )
+    )
+    assert config.mode.value == "pubsub"
+    assert config.pubsub_channel.value == "keyevent"
+    assert config.pubsub_refresh_s == 0
+
+
+def test_render_preview_shows_pubsub_subscription():
+    config = cli.build_config(cli.parse_args(["--mode", "sync", "--redis-cluster"]))
+    preview = cli.render_preview(config, {"keys": 1}, None, "KEA")
+    assert "run mode    : sync" in preview
+    assert "pubsub      : keyspace __keyspace@0__:* on each cluster primary" in preview
+    assert "notify flags : KEA" in preview
+
+
+def test_pubsub_mode_follows_without_scanning(monkeypatch):
+    stats = MigrationStats()
+
+    class _Runner:
+        ran = False
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, stop):
+            type(self).ran = True
+            return stats
+
+    class _NotifySource(_FakeSource):
+        def notify_keyspace_events(self):
+            return "Ex"
+
+    migrator = _fake_migrator(stats)
+    monkeypatch.setattr(cli, "RedisSource", _NotifySource)
+    monkeypatch.setattr(cli, "AerospikeSink", _FakeSink)
+    monkeypatch.setattr(cli, "Migrator", migrator)
+    monkeypatch.setattr(cli, "PubSubRunner", _Runner)
+
+    assert cli.main(["--mode", "pubsub"]) == 0
+    assert _Runner.ran is True
+    assert migrator.ran is False
+
+
+def test_sync_mode_scans_then_follows(monkeypatch):
+    stats = MigrationStats()
+
+    class _Runner:
+        ran = False
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, stop):
+            type(self).ran = True
+            return stats
+
+    class _NotifySource(_FakeSource):
+        def notify_keyspace_events(self):
+            return "KEA"
+
+    migrator = _fake_migrator(stats)
+    monkeypatch.setattr(cli, "RedisSource", _NotifySource)
+    monkeypatch.setattr(cli, "AerospikeSink", _FakeSink)
+    monkeypatch.setattr(cli, "Migrator", migrator)
+    monkeypatch.setattr(cli, "PubSubRunner", _Runner)
+
+    assert cli.main(["--mode", "sync"]) == 0
+    assert migrator.ran is True
+    assert _Runner.ran is True
+
+
+def test_dry_run_pubsub_does_not_subscribe(monkeypatch):
+    class _Runner:
+        ran = False
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, stop):
+            type(self).ran = True
+            return MigrationStats()
+
+    class _NotifySource(_FakeSource):
+        def notify_keyspace_events(self):
+            return "KEA"
+
+    monkeypatch.setattr(cli, "RedisSource", _NotifySource)
+    monkeypatch.setattr(cli, "AerospikeSink", _FakeSink)
+    monkeypatch.setattr(cli, "PubSubRunner", _Runner)
+
+    assert cli.main(["--mode", "pubsub", "--dry-run"]) == 0
+    assert _Runner.ran is False
+
+
 def test_dry_run_skips_migration(monkeypatch):
     migrator = _fake_migrator(MigrationStats())
     monkeypatch.setattr(cli, "RedisSource", _FakeSource)

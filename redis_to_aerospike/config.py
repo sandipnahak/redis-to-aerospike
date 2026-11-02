@@ -137,6 +137,55 @@ class TtlOverflowPolicy(str, Enum):
     NEVER_EXPIRE = "never_expire"
 
 
+class RunMode(str, Enum):
+    """How a run reads Redis.
+
+    * ``SCAN``   -- one pass over the keyspace (the default).
+    * ``PUBSUB`` -- follow keyspace notifications until interrupted.
+    * ``SYNC``   -- scan the keyspace, then follow notifications.
+    """
+
+    SCAN = "scan"
+    PUBSUB = "pubsub"
+    SYNC = "sync"
+
+
+class PubSubChannel(str, Enum):
+    """Which notification family to ``PSUBSCRIBE``.
+
+    * ``AUTO``     -- ``keyspace`` when ``notify-keyspace-events`` contains
+      ``K`` (as in ``KEA``), otherwise ``keyevent`` (as in ``Ex``).
+    * ``KEYSPACE`` -- ``__keyspace@db__:*`` (needs flag ``K``).
+    * ``KEYEVENT`` -- ``__keyevent@db__:*`` (needs flag ``E``).
+    """
+
+    AUTO = "auto"
+    KEYSPACE = "keyspace"
+    KEYEVENT = "keyevent"
+
+
+def _parse_run_mode(value: Any) -> RunMode:
+    if isinstance(value, RunMode):
+        return value
+    try:
+        return RunMode(str(value).strip().lower())
+    except ValueError:
+        allowed = ", ".join(item.value for item in RunMode)
+        raise ValueError(f"mode must be one of: {allowed} (got {value!r})") from None
+
+
+def _parse_pubsub_channel(value: Any) -> PubSubChannel:
+    if isinstance(value, PubSubChannel):
+        return value
+    try:
+        return PubSubChannel(str(value).strip().lower())
+    except ValueError:
+        allowed = ", ".join(item.value for item in PubSubChannel)
+        raise ValueError(
+            f"pubsub_channel must be one of: {allowed} (got {value!r})"
+        ) from None
+
+
 class RecordExistsPolicy(str, Enum):
     """How writes behave when the Aerospike record already exists.
 
@@ -459,6 +508,14 @@ class MigrationConfig:
     ttl_overflow_policy: TtlOverflowPolicy = TtlOverflowPolicy.REJECT
     # Seconds between progress heartbeat log lines. 0 disables the heartbeat.
     progress_interval: float = 10.0
+    # ``scan`` copies the keyspace once. ``pubsub`` follows keyspace
+    # notifications. ``sync`` scans, then follows.
+    mode: RunMode = RunMode.SCAN
+    # Which pub/sub family to subscribe to when ``mode`` is ``pubsub`` or ``sync``.
+    pubsub_channel: PubSubChannel = PubSubChannel.AUTO
+    # How often, in seconds, to rediscover cluster primaries while following
+    # notifications. ``0`` subscribes once and stays on those nodes.
+    pubsub_refresh_s: float = 30.0
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "MigrationConfig":
@@ -487,6 +544,13 @@ class MigrationConfig:
             progress_interval=float(
                 lookup.get("MIGRATION_PROGRESS_INTERVAL", cls.progress_interval)
             ),
+            mode=_parse_run_mode(lookup.get("MIGRATION_MODE", cls.mode.value)),
+            pubsub_channel=_parse_pubsub_channel(
+                lookup.get("MIGRATION_PUBSUB_CHANNEL", cls.pubsub_channel.value)
+            ),
+            pubsub_refresh_s=float(
+                lookup.get("MIGRATION_PUBSUB_REFRESH", cls.pubsub_refresh_s)
+            ),
         )
 
     @classmethod
@@ -510,6 +574,10 @@ class MigrationConfig:
             cfg.hash_strategy = HashStrategy(data.pop("hash_strategy"))
         if "ttl_overflow_policy" in data:
             cfg.ttl_overflow_policy = TtlOverflowPolicy(data.pop("ttl_overflow_policy"))
+        if "mode" in data:
+            cfg.mode = _parse_run_mode(data.pop("mode"))
+        if "pubsub_channel" in data:
+            cfg.pubsub_channel = _parse_pubsub_channel(data.pop("pubsub_channel"))
 
         for key, value in data.items():
             if hasattr(cfg, key):

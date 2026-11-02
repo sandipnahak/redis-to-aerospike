@@ -63,6 +63,7 @@ To see the installed revision, run `redis2aerospike --version`. Notable changes 
 | [06 - Troubleshooting](06-troubleshooting.md) | Symptom -> cause -> fix for common failures. |
 | [07 - Configuration reference](07-configuration-reference.md) | Every flag, YAML key, env var, and default in one place. |
 | [08 - nsup-period](08-nsup-period.md) | What `nsup-period` is, how preflight reads it on every node, and how to set it. |
+| [09 - Keyspace notifications](09-keyspace-notifications.md) | MemoryDB/Redis `notify-keyspace-events` (`KEA`, `Ex`) and `--mode pubsub` / `sync`. |
 | [Changelog](../CHANGELOG.md) | Version history and notable changes. |
 
 ## How you configure the tool

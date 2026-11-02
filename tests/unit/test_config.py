@@ -5,8 +5,10 @@ from redis_to_aerospike.config import (
     AerospikeConfig,
     HashStrategy,
     MigrationConfig,
+    PubSubChannel,
     RecordExistsPolicy,
     RedisConfig,
+    RunMode,
     TtlOverflowPolicy,
 )
 
@@ -73,6 +75,26 @@ def test_migration_from_env_parses_strategy_and_ints():
     assert cfg.write_batch_size == 100
     assert cfg.hash_strategy is HashStrategy.FIELD_BINS
     assert cfg.ttl_overflow_policy is TtlOverflowPolicy.CLAMP
+
+
+def test_migration_mode_from_env_and_yaml():
+    env = MigrationConfig.from_env(
+        {
+            "MIGRATION_MODE": "pubsub",
+            "MIGRATION_PUBSUB_CHANNEL": "keyevent",
+            "MIGRATION_PUBSUB_REFRESH": "0",
+        }
+    )
+    assert env.mode is RunMode.PUBSUB
+    assert env.pubsub_channel is PubSubChannel.KEYEVENT
+    assert env.pubsub_refresh_s == 0
+
+    cfg = MigrationConfig.from_dict(
+        {"mode": "sync", "pubsub_channel": "keyspace", "pubsub_refresh_s": 15}
+    )
+    assert cfg.mode is RunMode.SYNC
+    assert cfg.pubsub_channel is PubSubChannel.KEYSPACE
+    assert cfg.pubsub_refresh_s == 15
 
 
 def test_empty_password_env_becomes_none():
