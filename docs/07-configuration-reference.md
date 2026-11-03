@@ -176,6 +176,7 @@ second's worth of the configured rate.
 `sync` (scan, then tail), or `replay` (write an event log to Aerospike).
 `sync_catchup: true` subscribes before that scan and replays keys that change
 during the copy. `event_log` appends each pub/sub change in receive order.
+A relative path is created next to the config file when `pubsub` or `sync` starts.
 See [Keyspace notifications](09-keyspace-notifications.md).
 `pubsub_channel: auto` uses keyspace channels when the parameter contains `K`
 (`KEA`) and keyevent channels when it contains only `E` (`Ex`).

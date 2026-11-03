@@ -592,6 +592,7 @@ class PubSubRunner:
         stats: Optional[MigrationStats] = None,
         notify_flags: Optional[str] = None,
         listener: Optional[KeyspaceListener] = None,
+        event_log: Optional[EventLog] = None,
     ):
         self._config = config
         self._source = source
@@ -609,7 +610,7 @@ class PubSubRunner:
             if listener is None and config.sync_catchup and config.mode is RunMode.SYNC
             else None
         )
-        self._event_log: Optional[EventLog] = None
+        self._event_log = event_log
         self._listener = listener or KeyspaceListener(
             config,
             source.client,
@@ -633,7 +634,7 @@ class PubSubRunner:
         """
         self.stats.resume()
         try:
-            if self._config.event_log:
+            if self._event_log is None and self._config.event_log:
                 try:
                     self._event_log = EventLog(self._config.event_log)
                 except OSError as exc:

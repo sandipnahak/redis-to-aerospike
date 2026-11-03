@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import threading
 from contextlib import contextmanager
@@ -31,7 +32,7 @@ from .keyspace import (
     notification_db,
 )
 from .converters.registry import ConverterRegistry
-from .event_log import iter_event_log, load_obj, record_from_entry, replay_log
+from .event_log import EventLog, iter_event_log, load_obj, record_from_entry, replay_log
 from .log_banners import log_migration_banner
 from .migrator import Migrator
 from .pubsub_sync import PubSubRunner, probe_keyspace_notifications
@@ -136,6 +137,10 @@ def build_config(args: argparse.Namespace) -> MigrationConfig:
 
     if "redis_key_pattern" in provided and "redis_match" not in provided:
         base.redis.scan_match = provided["redis_key_pattern"]
+
+    if base.event_log and not os.path.isabs(base.event_log):
+        anchor = os.path.dirname(os.path.abspath(config_path)) if config_path else os.getcwd()
+        base.event_log = os.path.normpath(os.path.join(anchor, base.event_log))
 
     return base
 
@@ -855,6 +860,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if config.mode is RunMode.REPLAY:
         return _run_replay(config, args.dry_run)
 
+    event_log = None
+    if (
+        not args.dry_run
+        and config.mode in (RunMode.PUBSUB, RunMode.SYNC)
+        and config.event_log
+    ):
+        try:
+            event_log = EventLog(config.event_log)
+        except OSError as exc:
+            logger.error("cannot open event log %s: %s", config.event_log, exc)
+            return 2
+        logger.info("recording pub/sub changes in order to %s", event_log.path)
+
     source = RedisSource(config.redis)
     registry = ConverterRegistry.from_config(config)
     sink = AerospikeSink(config.aerospike)
@@ -863,6 +881,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         source.ping()
     except Exception as exc:
         logger.error("cannot reach Redis: %s", exc)
+        if event_log is not None:
+            event_log.close()
         return 2
 
     try:
@@ -870,6 +890,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:
         logger.error("cannot reach Aerospike: %s", exc)
         source.close()
+        if event_log is not None:
+            event_log.close()
         return 2
 
     try:
@@ -928,6 +950,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 sink,
                 stats=stats,
                 notify_flags=notify_flags,
+                event_log=event_log,
             )
 
             def _scan() -> None:
@@ -958,11 +981,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                         sink,
                         stats=stats,
                         notify_flags=notify_flags,
+                        event_log=event_log,
                     ).run(stop)
         log_migration_banner(logger)
     finally:
         source.close()
         sink.close()
+        if event_log is not None:
+            event_log.close()
 
     report = stats.format_report()
     if stats.errors:

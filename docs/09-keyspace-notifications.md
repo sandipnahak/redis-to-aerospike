@@ -86,11 +86,15 @@ keep them.
 then subscribes. Changes published **during** that scan are not replayed.
 
 `event_log` appends each pub/sub change to a JSONL file in the order it was
-received. The run inserts a local timestamp before the extension, so
-`migration/redis2aerospike-pubsub.jsonl` is written as
-`migration/redis2aerospike-pubsub-20261103T160300+0530.jsonl`. `sync` logs the
+received. A relative path is resolved next to the config file (or the current
+directory when there is no `--config`). The file is created when `pubsub` or
+`sync` starts, before Redis is contacted. The run inserts a local timestamp
+before the extension, so `redis2aerospike-pubsub.jsonl` is written as
+`redis2aerospike-pubsub-20261103T160300+0530.jsonl`. The startup log prints
+that path (`recording pub/sub changes in order to ...`). `sync` logs the
 tail, not the initial scan. Replay that stamped file with `--mode replay`,
-which talks only to Aerospike:
+which talks only to Aerospike. Pass the stamped filename or an absolute path;
+replay does not add another timestamp:
 
 ```bash
 redis2aerospike --config /etc/redis2aerospike/config.yaml --mode replay \

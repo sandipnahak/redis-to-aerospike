@@ -113,6 +113,37 @@ def _write_yaml(tmp_path, data):
     return str(path)
 
 
+def test_relative_event_log_is_resolved_next_to_the_config(tmp_path):
+    path = _write_yaml(tmp_path, {"mode": "sync", "event_log": "redis2aerospike-sync.jsonl"})
+    config = cli.build_config(cli.parse_args(["--config", path]))
+    assert config.event_log == str(tmp_path / "redis2aerospike-sync.jsonl")
+
+
+def test_absolute_event_log_is_left_unchanged(tmp_path):
+    path = _write_yaml(tmp_path, {"mode": "sync", "event_log": "/var/log/redis2aerospike/events.jsonl"})
+    config = cli.build_config(cli.parse_args(["--config", path]))
+    assert config.event_log == "/var/log/redis2aerospike/events.jsonl"
+
+
+def test_event_log_is_created_before_redis_connect(tmp_path, monkeypatch):
+    path = _write_yaml(tmp_path, {"mode": "sync", "event_log": "redis2aerospike-sync.jsonl"})
+
+    class _Down:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            raise ConnectionError("down")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "RedisSource", _Down)
+    assert cli.main(["--config", path]) == 2
+    created = list(tmp_path.glob("redis2aerospike-sync-*.jsonl"))
+    assert len(created) == 1
+
+
 def test_build_config_loads_yaml_file(tmp_path):
     path = _write_yaml(
         tmp_path,
