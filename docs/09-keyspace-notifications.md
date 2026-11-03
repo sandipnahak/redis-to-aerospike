@@ -76,6 +76,8 @@ notifications. Set routes apply to writes and to deletes, so an expired
 `user:42` removes the same Aerospike record a scan would have written.
 
 Stop the listener with Ctrl+C. A second interrupt aborts immediately.
+Leave it running in the background or under systemd, with the log on stderr,
+as described in [Redirecting and capturing logs](05-running-and-tuning.md#redirecting-and-capturing-logs).
 Events published while the process is down are gone; Redis pub/sub does not
 keep them.
 

@@ -183,11 +183,76 @@ fi
 
 ## Redirecting and capturing logs
 
-Because all output uses standard logging (to stderr), you can capture it like any
-other command:
+Logging goes to stderr. `--log-level` is `DEBUG`, `INFO`, `WARNING`, or `ERROR`
+(default `INFO`). Each line is flushed, so a redirected file stays current.
 
 ```bash
-redis2aerospike --config prod.yaml --log-level INFO 2> migration.log
+redis2aerospike --config /etc/redis2aerospike/config.yaml --log-level INFO 2> /var/log/redis2aerospike/redis2aerospike.log
 ```
+
+`pubsub` and `sync` keep running until the process receives `SIGTERM` (or
+Ctrl+C in the foreground). A second interrupt aborts immediately.
+
+### Background
+
+`nohup` leaves the process running after the terminal closes. `$!` is the
+process id.
+
+```bash
+mkdir -p /var/log/redis2aerospike
+nohup redis2aerospike \
+  --config /etc/redis2aerospike/config.yaml \
+  --log-level INFO \
+  >> /var/log/redis2aerospike/redis2aerospike.log 2>&1 &
+echo $! > /var/run/redis2aerospike.pid
+```
+
+Follow the log, then stop the process. `SIGTERM` lets the tail write its summary
+and exit 0.
+
+```bash
+tail -f /var/log/redis2aerospike/redis2aerospike.log
+kill "$(cat /var/run/redis2aerospike.pid)"
+```
+
+### Service
+
+A systemd unit is the same process, restarted if it crashes. Exit code 2 is a
+configuration or preflight failure, so it is not restarted. Install
+`redis2aerospike` on `PATH` (the unit below uses `/usr/local/bin/redis2aerospike`)
+and put the YAML at `/etc/redis2aerospike/config.yaml`.
+
+`/etc/systemd/system/redis2aerospike.service`:
+
+```ini
+[Unit]
+Description=Redis to Aerospike sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/redis2aerospike --config /etc/redis2aerospike/config.yaml --log-level INFO
+Restart=on-failure
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:/var/log/redis2aerospike/redis2aerospike.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo mkdir -p /var/log/redis2aerospike /etc/redis2aerospike
+sudo systemctl daemon-reload
+sudo systemctl enable --now redis2aerospike.service
+sudo tail -f /var/log/redis2aerospike/redis2aerospike.log
+sudo systemctl stop redis2aerospike.service
+```
+
+`journalctl -u redis2aerospike.service` shows the same lines when the unit is
+not using the file above.
 
 Next: [Troubleshooting](06-troubleshooting.md).
