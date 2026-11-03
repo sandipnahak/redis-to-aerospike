@@ -32,7 +32,7 @@ from .keyspace import (
     notification_db,
 )
 from .converters.registry import ConverterRegistry
-from .event_log import EventLog, iter_event_log, load_obj, record_from_entry, replay_log
+from .event_log import EventLog, load_obj, record_from_entry, replay_log
 from .log_banners import log_migration_banner
 from .migrator import Migrator
 from .pubsub_sync import PubSubRunner, probe_keyspace_notifications
@@ -97,6 +97,7 @@ _ARG_MAP: Dict[str, _CLIArgBinding] = {
     "pubsub_refresh": (None, "pubsub_refresh_s", None),
     "sync_catchup": (None, "sync_catchup", None),
     "event_log": (None, "event_log", None),
+    "from_seq": (None, "from_seq", int),
 }
 
 
@@ -383,6 +384,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSONL file of pub/sub changes in receive order. pubsub and sync "
         "append to it. replay reads it and writes Aerospike",
     )
+    pipeline.add_argument(
+        "--from-seq",
+        type=int,
+        default=sup,
+        help="replay only: apply lines whose seq is this number or later "
+        "(default: the whole file). The time field is not used",
+    )
     pipeline.add_argument("--workers", type=int, default=sup, help="default: 8")
     pipeline.add_argument("--scan-batch", type=int, default=sup, help="default: 500")
     pipeline.add_argument("--queue-size", type=int, default=sup, help="default: 10000")
@@ -659,6 +667,10 @@ def render_preview(
             )
     if config.mode in (RunMode.PUBSUB, RunMode.SYNC, RunMode.REPLAY):
         lines.append(f"    event log   : {config.event_log or 'off'}")
+    if config.mode is RunMode.REPLAY:
+        lines.append(
+            f"    from seq    : {config.from_seq if config.from_seq is not None else 'start'}"
+        )
     lines.append(estimate_line)
     return "\n".join(lines)
 
@@ -794,6 +806,9 @@ def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
             "replay requires event_log, the JSONL file written by pubsub or sync"
         )
         return 2
+    if config.from_seq is not None and config.from_seq < 1:
+        logger.error("from_seq must be 1 or greater")
+        return 2
     registry = ConverterRegistry.from_config(config)
     sink = AerospikeSink(config.aerospike)
     try:
@@ -805,11 +820,12 @@ def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
     stats.start()
     try:
         if dry_run:
-            count = sum(1 for _entry in iter_event_log(config.event_log))
+            count = replay_log(config.event_log, lambda _entry: None, config.from_seq)
             logger.info(
-                "dry run: %d event(s) in %s would be written",
+                "dry run: %d event(s) in %s would be written%s",
                 count,
                 config.event_log,
+                "" if config.from_seq is None else f" from seq {config.from_seq}",
             )
             return 0
         migrator = Migrator(config, None, registry, sink, stats=stats)
@@ -825,8 +841,13 @@ def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
                 return
             stats.record_skipped(str(action or "unknown"))
 
-        written = replay_log(config.event_log, apply_entry)
-        logger.info("replayed %d event(s) from %s", written, config.event_log)
+        written = replay_log(config.event_log, apply_entry, config.from_seq)
+        logger.info(
+            "replayed %d event(s) from %s%s",
+            written,
+            config.event_log,
+            "" if config.from_seq is None else f" starting at seq {config.from_seq}",
+        )
     except (OSError, ValueError) as exc:
         logger.error("cannot replay %s: %s", config.event_log, exc)
         stats.record_error("event_log")

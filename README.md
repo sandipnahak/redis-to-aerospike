@@ -22,7 +22,8 @@ is the full Redis key and ``set`` comes from ``--aerospike-set``.
   `--mode sync` scans first, then follows. `sync_catchup` subscribes before
   the scan and replays keys that change during the copy. Cluster mode subscribes to every
   primary, because those events stay on the node that owns the key. See
-  [Keyspace notifications](docs/09-keyspace-notifications.md).
+  [Keyspace notifications](docs/09-keyspace-notifications.md). `--mode replay`
+  writes a recorded tail to Aerospike. See [Replay](docs/10-replay.md).
 - **Multithreaded pipeline** — A producer streams `SCAN` results into a **bounded
   queue**; a pool of **worker threads** (default 8, `--workers`) converts and writes
   in parallel so the run stays fast without loading the whole keyspace into memory.

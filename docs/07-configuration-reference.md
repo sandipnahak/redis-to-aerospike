@@ -162,6 +162,7 @@ and counts the key under **skipped** (`exists`) if a record already exists.
 | Pub/sub primary refresh (s)  | `--pubsub-refresh`      | `pubsub_refresh_s`    | `MIGRATION_PUBSUB_REFRESH`      | `30`; `0` subscribes once                  |
 | Sync catch-up                | `--sync-catchup`        | `sync_catchup`        | `MIGRATION_SYNC_CATCHUP`        | `false`; `sync` only                       |
 | Event log                    | `--event-log`           | `event_log`           | `MIGRATION_EVENT_LOG`           | unset; `pubsub`, `sync`, and `replay`      |
+| Replay start sequence        | `--from-seq`            | `from_seq`            | `MIGRATION_FROM_SEQ`            | unset; `replay` applies the whole file     |
 
 
 Notes:
@@ -176,8 +177,11 @@ second's worth of the configured rate.
 `sync` (scan, then tail), or `replay` (write an event log to Aerospike).
 `sync_catchup: true` subscribes before that scan and replays keys that change
 during the copy. `event_log` appends each pub/sub change in receive order.
+Each line has `seq` and a `time` stamp for tracking. Replay follows `seq` and
+ignores `time`. `from_seq` starts replay at that sequence, inclusive.
 A relative path is created next to the config file when `pubsub` or `sync` starts.
-See [Keyspace notifications](09-keyspace-notifications.md).
+See [Keyspace notifications](09-keyspace-notifications.md) and
+[Replay](10-replay.md).
 `pubsub_channel: auto` uses keyspace channels when the parameter contains `K`
 (`KEA`) and keyevent channels when it contains only `E` (`Ex`).
 - `write_batch_size > 1` inserts records using Aerospike `batch_write` instead of

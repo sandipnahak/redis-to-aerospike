@@ -756,3 +756,6 @@ def test_replay_writes_the_log_in_order(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "AerospikeSink", _ReplaySink)
     assert cli.main(["--mode", "replay", "--event-log", str(path)]) == 0
     assert seen == [("write", "a"), ("delete", "a")]
+    seen.clear()
+    assert cli.main(["--mode", "replay", "--event-log", str(path), "--from-seq", "2"]) == 0
+    assert seen == [("delete", "a")]

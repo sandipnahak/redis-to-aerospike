@@ -53,8 +53,13 @@ parameter.
 | `replay` | [examples/config.replay.yaml](../examples/config.replay.yaml) | Write an event log to Aerospike. |
 
 ```bash
-redis2aerospike --config examples/config.sync.yaml
+redis2aerospike --config examples/config.sync.yaml \
+  --event-log redis2aerospike-sync.jsonl
 ```
+
+`--event-log` records the tail when the YAML has no `event_log`. The file is
+created next to the config, and the name gains a local timestamp before
+`.jsonl`.
 
 ## Run it
 
@@ -85,21 +90,9 @@ keep them.
 `--mode sync` with `sync_catchup: false` (the default) copies the keyspace,
 then subscribes. Changes published **during** that scan are not replayed.
 
-`event_log` appends each pub/sub change to a JSONL file in the order it was
-received. A relative path is resolved next to the config file (or the current
-directory when there is no `--config`). The file is created when `pubsub` or
-`sync` starts, before Redis is contacted. The run inserts a local timestamp
-before the extension, so `redis2aerospike-pubsub.jsonl` is written as
-`redis2aerospike-pubsub-20261103T160300+0530.jsonl`. The startup log prints
-that path (`recording pub/sub changes in order to ...`). `sync` logs the
-tail, not the initial scan. Replay that stamped file with `--mode replay`,
-which talks only to Aerospike. Pass the stamped filename or an absolute path;
-replay does not add another timestamp:
-
-```bash
-redis2aerospike --config /etc/redis2aerospike/config.yaml --mode replay \
-  --event-log /var/log/redis2aerospike/events-20261103T160300+0530.jsonl
-```
+`event_log` appends each pub/sub change to a JSONL file in receive order.
+`sync` logs the tail, not the initial scan. Recording, the line format, and
+`--mode replay` / `--from-seq` are covered in [Replay](10-replay.md).
 
 `sync_catchup: true` subscribes before the scan. Each key that changes during
 the copy is replayed once the scan finishes, then the live tail continues.

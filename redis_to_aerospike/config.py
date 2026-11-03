@@ -166,6 +166,15 @@ class PubSubChannel(str, Enum):
     KEYEVENT = "keyevent"
 
 
+def _parse_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text)
+
+
 def _parse_optional_str(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -541,6 +550,9 @@ class MigrationConfig:
     # append to it. ``replay`` reads it and writes Aerospike. Unset disables
     # the log.
     event_log: Optional[str] = None
+    # ``replay`` only. Apply log lines whose ``seq`` is this value or later.
+    # ``None`` applies the whole file. The ``time`` field on each line is not used.
+    from_seq: Optional[int] = None
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "MigrationConfig":
@@ -580,6 +592,7 @@ class MigrationConfig:
                 lookup.get("MIGRATION_SYNC_CATCHUP"), default=cls.sync_catchup
             ),
             event_log=_parse_optional_str(lookup.get("MIGRATION_EVENT_LOG")),
+            from_seq=_parse_optional_int(lookup.get("MIGRATION_FROM_SEQ")),
         )
 
     @classmethod
@@ -611,6 +624,8 @@ class MigrationConfig:
             cfg.sync_catchup = _parse_bool(data.pop("sync_catchup"))
         if "event_log" in data:
             cfg.event_log = _parse_optional_str(data.pop("event_log"))
+        if "from_seq" in data:
+            cfg.from_seq = _parse_optional_int(data.pop("from_seq"))
 
         for key, value in data.items():
             if hasattr(cfg, key):

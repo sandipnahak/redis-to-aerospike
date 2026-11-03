@@ -44,9 +44,11 @@ def test_event_log_writes_lines_in_receive_order(tmp_path):
     log.close()
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert [json.loads(line)["seq"] for line in lines] == [1, 2]
-    assert json.loads(lines[0])["key"] == "a"
-    assert json.loads(lines[1])["action"] == "delete"
+    parsed = [json.loads(line) for line in lines]
+    assert [line["seq"] for line in parsed] == [1, 2]
+    assert parsed[0]["key"] == "a"
+    assert parsed[1]["action"] == "delete"
+    assert all("T" in line["time"] for line in parsed)
 
 
 def test_replay_reads_the_file_in_order(tmp_path):
@@ -71,3 +73,7 @@ def test_replay_reads_the_file_in_order(tmp_path):
 
     assert replay_log(str(path), apply_entry) == 2
     assert seen == ["upsert", "delete"]
+
+    seen.clear()
+    assert replay_log(str(path), apply_entry, from_seq=2) == 1
+    assert seen == ["delete"]

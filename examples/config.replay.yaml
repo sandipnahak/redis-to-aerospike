@@ -1,13 +1,19 @@
 # Write an event log into Aerospike, in file order. Redis is not contacted.
 #
-#   redis2aerospike --config examples/config.replay.yaml
+#   redis2aerospike --config examples/config.replay.yaml \
+#     --event-log redis2aerospike-sync-20261103T160300+0530.jsonl \
+#     --from-seq 120
 #
-# The file is produced by pubsub or sync when event_log is set.
-# Preview the file without writing:
-#   redis2aerospike --config examples/config.replay.yaml --dry-run
+# Pass the file written by pubsub or sync. The filename timestamp and the
+# time field on each line are for tracking. Replay follows seq. --from-seq
+# applies that sequence and every line after it. Omit it to apply the whole file.
+# Preview without writing:
+#   redis2aerospike --config examples/config.replay.yaml --dry-run \
+#     --event-log redis2aerospike-sync-20261103T160300+0530.jsonl --from-seq 120
 
 mode: replay
-event_log: /var/log/redis2aerospike/events.jsonl
+event_log: redis2aerospike-sync-20261103T160300+0530.jsonl
+# from_seq: 120
 
 aerospike:
   host: aerospike.example

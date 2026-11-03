@@ -2,6 +2,13 @@
 #
 #   redis2aerospike --config examples/config.sync.yaml
 #
+# The same run with an event log, when the YAML does not set event_log.
+# A relative path is written next to the config file, with a timestamp added
+# before .jsonl (redis2aerospike-sync-20261103T160300+0530.jsonl):
+#
+#   redis2aerospike --config examples/config.sync.yaml \
+#     --event-log redis2aerospike-sync.jsonl
+#
 # sync_catchup subscribes before the scan and replays every key that changes
 # during the copy. Leave it false to subscribe only after the scan; that
 # window is then dropped.
@@ -13,7 +20,8 @@
 
 mode: sync
 # Append tail changes in receive order. The initial scan is not logged.
-# event_log: /var/log/redis2aerospike/events.jsonl
+# Equivalent to --event-log redis2aerospike-sync.jsonl
+event_log: redis2aerospike-sync.jsonl
 pubsub_channel: auto
 pubsub_refresh_s: 30
 # Subscribe first so writes during the scan are not lost. Requires KEA

@@ -206,6 +206,7 @@ Pub/sub channels are not keys, so a scan never copies them. With
 `--mode pubsub` or `--mode sync` the tool follows
 [keyspace notifications](09-keyspace-notifications.md) instead: each event
 re-reads the key (or deletes it, for `del` / `expired` / `evicted`) and
-writes the same Aerospike types as a scan.
+writes the same Aerospike types as a scan. A recorded tail can be applied
+again with [replay mode](10-replay.md).
 
 Next: [Running and tuning](05-running-and-tuning.md).

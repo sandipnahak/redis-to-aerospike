@@ -139,6 +139,8 @@ class EventLog:
                 if item is not None:
                     line = dict(item)
                     line["seq"] = self._expect
+                    # Clock time is for tracking. Replay uses seq, not this field.
+                    line["time"] = datetime.now().astimezone().isoformat(timespec="seconds")
                     self._fh.write(json.dumps(line, separators=(",", ":")) + "\n")
                     self._fh.flush()
                     self._written += 1
@@ -180,10 +182,33 @@ def iter_event_log(path: str) -> Iterator[dict[str, Any]]:
             yield entry
 
 
-def replay_log(path: str, apply_entry: Callable[[dict[str, Any]], None]) -> int:
-    """Apply every line in file order. Returns how many lines were applied."""
+def seq_selected(entry: dict[str, Any], from_seq: Optional[int]) -> bool:
+    """True when this line should be applied.
+
+    ``from_seq`` is inclusive. ``None`` selects every line. ``time`` is not
+    consulted; it is only a tracking stamp on the line.
+    """
+    if from_seq is None:
+        return True
+    seq = entry.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        raise ValueError("event log line has no integer seq; replay cannot start at a sequence")
+    return seq >= from_seq
+
+
+def replay_log(
+    path: str,
+    apply_entry: Callable[[dict[str, Any]], None],
+    from_seq: Optional[int] = None,
+) -> int:
+    """Apply lines in file order. Returns how many lines were applied.
+
+    When ``from_seq`` is set, lines with a smaller ``seq`` are skipped.
+    """
     count = 0
     for entry in iter_event_log(path):
+        if not seq_selected(entry, from_seq):
+            continue
         apply_entry(entry)
         count += 1
     return count

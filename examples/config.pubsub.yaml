@@ -2,6 +2,12 @@
 #
 #   redis2aerospike --config examples/config.pubsub.yaml
 #
+# Record changes when the YAML does not set event_log. The file is created
+# next to the config, with a timestamp before .jsonl:
+#
+#   redis2aerospike --config examples/config.pubsub.yaml \
+#     --event-log redis2aerospike-pubsub.jsonl
+#
 # Does not copy keys that already exist. Use examples/config.sync.yaml for a
 # scan followed by this tail.
 #
@@ -14,7 +20,8 @@
 
 mode: pubsub
 # Append each change in receive order. Replay with --mode replay.
-# event_log: /var/log/redis2aerospike/events.jsonl
+# Equivalent to --event-log redis2aerospike-pubsub.jsonl
+event_log: redis2aerospike-pubsub.jsonl
 pubsub_channel: auto
 # How often to rediscover cluster primaries after a failover. 0 subscribes once.
 pubsub_refresh_s: 30
