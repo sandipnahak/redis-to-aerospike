@@ -65,6 +65,7 @@ To see the installed revision, run `redis2aerospike --version`. Notable changes 
 | [08 - nsup-period](08-nsup-period.md) | What `nsup-period` is, how preflight reads it on every node, and how to set it. |
 | [09 - Keyspace notifications](09-keyspace-notifications.md) | MemoryDB/Redis `notify-keyspace-events` (`KEA`, `Ex`) and `--mode pubsub` / `sync`. |
 | [10 - Replay](10-replay.md) | Record a pub/sub tail to a JSONL file and write it to Aerospike with `--mode replay`. |
+| [11 - Parity](11-parity.md) | Shadow-read Aerospike for a sample of MemoryDB keys and stop when a mismatch is unexplained. |
 | [Changelog](../CHANGELOG.md) | Version history and notable changes. |
 
 ## How you configure the tool

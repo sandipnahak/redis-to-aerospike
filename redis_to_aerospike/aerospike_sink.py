@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 AerospikeKeyTuple = Tuple[str, str, Union[str, bytes]]
 
 from .config import AerospikeConfig, RecordExistsPolicy
-from .models import AerospikeRecord, BinWritePolicy
+from .models import TTL_NEVER_EXPIRE, AerospikeRecord, BinWritePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -458,6 +458,32 @@ class AerospikeSink:
             ):
                 raise RecordAlreadyExists from exc
             raise
+
+    def read(
+        self, key: str | bytes, set_name: Optional[str] = None
+    ) -> Optional[Tuple[Dict[str, Any], int]]:
+        """Return ``(bins, ttl seconds)`` or ``None`` when the record is missing.
+
+        A never-expire record is reported as :data:`TTL_NEVER_EXPIRE`.
+        """
+        if self._client is None:
+            raise RuntimeError("AerospikeSink is not connected; call connect() first")
+        key_tuple = (self._config.namespace, set_name or self._config.set_name, key)
+        try:
+            got = self._client.get(key_tuple)
+        except Exception as exc:
+            if self._is_not_found(exc):
+                return None
+            raise
+        if not isinstance(got, tuple) or len(got) < 3 or got[2] is None:
+            return None
+        meta = got[1] if isinstance(got[1], dict) else {}
+        ttl = meta.get("ttl")
+        if ttl is None or int(ttl) < 0 or int(ttl) >= TTL_NEVER_EXPIRE:
+            ttl_s = TTL_NEVER_EXPIRE
+        else:
+            ttl_s = int(ttl)
+        return dict(got[2]), ttl_s
 
     def last_update_ms(self, key: str | bytes, set_name: Optional[str] = None) -> Optional[int]:
         """Unix milliseconds of the record's last update, or ``None`` if absent.

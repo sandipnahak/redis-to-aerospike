@@ -144,12 +144,15 @@ class RunMode(str, Enum):
     * ``PUBSUB`` -- follow keyspace notifications until interrupted.
     * ``SYNC``   -- scan the keyspace, then follow notifications.
     * ``REPLAY`` -- write an event log into Aerospike, in file order, without Redis.
+    * ``PARITY`` -- shadow-read Aerospike for a sample of MemoryDB keys and
+      stop when a mismatch is not explained by TTL skew or an in-flight write.
     """
 
     SCAN = "scan"
     PUBSUB = "pubsub"
     SYNC = "sync"
     REPLAY = "replay"
+    PARITY = "parity"
 
 
 class PubSubChannel(str, Enum):
@@ -553,6 +556,12 @@ class MigrationConfig:
     # ``replay`` only. Apply log lines whose ``seq`` is this value or later.
     # ``None`` applies the whole file. The ``time`` field on each line is not used.
     from_seq: Optional[int] = None
+    # ``parity`` only. Fraction of MemoryDB keys to shadow-read from Aerospike.
+    # ``1`` checks the whole keyspace. The sample is a stable hash of the key.
+    parity_sample: float = 0.01
+    # Remaining TTL may differ by this many milliseconds and still be explained
+    # as clock skew between the MemoryDB read and the Aerospike record.
+    parity_ttl_skew_ms: int = 5_000
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "MigrationConfig":
@@ -593,6 +602,10 @@ class MigrationConfig:
             ),
             event_log=_parse_optional_str(lookup.get("MIGRATION_EVENT_LOG")),
             from_seq=_parse_optional_int(lookup.get("MIGRATION_FROM_SEQ")),
+            parity_sample=float(lookup.get("MIGRATION_PARITY_SAMPLE", cls.parity_sample)),
+            parity_ttl_skew_ms=int(
+                lookup.get("MIGRATION_PARITY_TTL_SKEW", cls.parity_ttl_skew_ms)
+            ),
         )
 
     @classmethod

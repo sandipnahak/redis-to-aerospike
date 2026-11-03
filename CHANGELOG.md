@@ -14,6 +14,7 @@ for installs and issue reports, not a formal product release cadence.
 - When MemoryDB rejects `CONFIG GET`, `pubsub` and `sync` check `notify-keyspace-events` by writing a temporary key and waiting for its notification. No notification exits with code 2. A successful `CONFIG GET` that shows the parameter missing or empty still exits with code 2.
 - A relative `event_log` is created next to the config file as soon as `pubsub` or `sync` starts, before Redis is contacted. The startup log prints the timestamped path.
 - Replay skips a line when the Aerospike record's last update time is the same as or later than the line's `time`.
+- `--mode parity` shadow-reads a sample of MemoryDB keys from Aerospike, reports the mismatch rate, missing keys, and Aerospike latency percentiles, and exits 1 when a mismatch is not TTL skew or an in-flight write. See [Parity](docs/11-parity.md).
 
 ### Added
 

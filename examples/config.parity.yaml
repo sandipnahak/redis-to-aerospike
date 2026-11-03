@@ -1,0 +1,37 @@
+# Shadow-read Aerospike for a sample of the keys MemoryDB is serving.
+# Does not write either database.
+#
+#   redis2aerospike --config examples/config.parity.yaml
+#
+# Check every key:
+#   redis2aerospike --config examples/config.parity.yaml --parity-sample 1
+#
+# Exit 0 when every difference is TTL skew or an in-flight write.
+# Exit 1 when a key is missing or the value differs and MemoryDB did not
+# change on a second read. Do not cut over on exit 1.
+
+mode: parity
+# Fraction of keys. 1 checks the whole keyspace. The sample is a stable hash.
+parity_sample: 0.01
+# Remaining TTL may differ by this many milliseconds and still be skew.
+parity_ttl_skew_ms: 5000
+
+redis:
+  host: clustercfg.example.memorydb.amazonaws.com
+  port: 6379
+  cluster: true
+  username: app
+  password: null
+  ssl: true
+  scan_match: "*"
+  ttl_command: pttl
+
+aerospike:
+  host: aerospike.example
+  port: 3000
+  namespace: test
+  set_name: redis
+  value_bin: value
+
+workers: 8
+progress_interval: 10

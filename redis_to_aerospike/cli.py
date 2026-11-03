@@ -35,6 +35,7 @@ from .converters.registry import ConverterRegistry
 from .event_log import EventLog, load_obj, record_from_entry, replay_log
 from .log_banners import log_migration_banner
 from .migrator import Migrator
+from .parity import ParityRunner
 from .pubsub_sync import PubSubRunner, probe_keyspace_notifications
 from .redis_source import RedisSource
 from .stats import MigrationStats
@@ -98,6 +99,8 @@ _ARG_MAP: Dict[str, _CLIArgBinding] = {
     "sync_catchup": (None, "sync_catchup", None),
     "event_log": (None, "event_log", None),
     "from_seq": (None, "from_seq", int),
+    "parity_sample": (None, "parity_sample", float),
+    "parity_ttl_skew": (None, "parity_ttl_skew_ms", int),
 }
 
 
@@ -355,7 +358,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[mode.value for mode in RunMode],
         default=sup,
         help="scan once (default), pubsub (follow notify-keyspace-events), "
-        "sync (scan, then follow), or replay (write an event log to Aerospike)",
+        "sync (scan, then follow), replay (write an event log to Aerospike), "
+        "or parity (shadow-read Aerospike and stop on an unexplained mismatch)",
     )
     pipeline.add_argument(
         "--pubsub-channel",
@@ -390,6 +394,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=sup,
         help="replay only: apply lines whose seq is this number or later "
         "(default: the whole file). The time field is not used",
+    )
+    pipeline.add_argument(
+        "--parity-sample",
+        type=float,
+        default=sup,
+        help="parity only: fraction of MemoryDB keys to shadow-read from Aerospike "
+        "(default: 0.01; 1 checks every key)",
+    )
+    pipeline.add_argument(
+        "--parity-ttl-skew",
+        type=int,
+        default=sup,
+        help="parity only: TTL difference in milliseconds that still counts as skew "
+        "(default: 5000)",
     )
     pipeline.add_argument("--workers", type=int, default=sup, help="default: 8")
     pipeline.add_argument("--scan-batch", type=int, default=sup, help="default: 500")
@@ -671,6 +689,9 @@ def render_preview(
         lines.append(
             f"    from seq    : {config.from_seq if config.from_seq is not None else 'start'}"
         )
+    if config.mode is RunMode.PARITY:
+        lines.append(f"    parity sample : {config.parity_sample:g}")
+        lines.append(f"    ttl skew      : {config.parity_ttl_skew_ms} ms")
     lines.append(estimate_line)
     return "\n".join(lines)
 
@@ -799,6 +820,55 @@ def apply_server_info(
         config.aerospike.max_record_size = server_max
 
 
+def _run_parity(config: MigrationConfig, dry_run: bool) -> int:
+    """Shadow-read Aerospike for a sample of MemoryDB keys. Redis is not written."""
+    if not 0 < config.parity_sample <= 1:
+        logger.error("parity_sample must be greater than 0 and at most 1")
+        return 2
+    if config.parity_ttl_skew_ms < 0:
+        logger.error("parity_ttl_skew_ms must be 0 or greater")
+        return 2
+    source = RedisSource(config.redis)
+    registry = ConverterRegistry.from_config(config)
+    sink = AerospikeSink(config.aerospike)
+    try:
+        source.ping()
+    except Exception as exc:
+        logger.error("cannot reach Redis: %s", exc)
+        return 2
+    try:
+        sink.connect()
+    except Exception as exc:
+        logger.error("cannot reach Aerospike: %s", exc)
+        source.close()
+        return 2
+    try:
+        if dry_run:
+            logger.info(
+                "dry run: parity would shadow-read %.4g of MemoryDB keys "
+                "against Aerospike (ttl skew %d ms)",
+                config.parity_sample,
+                config.parity_ttl_skew_ms,
+            )
+            return 0
+        report = ParityRunner(config, source, registry, sink).run()
+        logger.info("\n%s", report.format())
+        if report.seen and report.checked == 0:
+            logger.error("parity sample selected no keys")
+            return 1
+        if report.unexplained:
+            logger.error(
+                "parity found %d unexplained mismatch(es); do not proceed",
+                report.unexplained,
+            )
+            return 1
+        logger.info("parity mismatches are explainable")
+        return 0
+    finally:
+        source.close()
+        sink.close()
+
+
 def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
     """Write an event log to Aerospike in file order. Redis is not used."""
     if not config.event_log:
@@ -880,6 +950,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     config = build_config(args)
     if config.mode is RunMode.REPLAY:
         return _run_replay(config, args.dry_run)
+    if config.mode is RunMode.PARITY:
+        return _run_parity(config, args.dry_run)
 
     event_log = None
     if (

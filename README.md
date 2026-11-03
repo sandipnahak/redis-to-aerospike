@@ -24,6 +24,8 @@ is the full Redis key and ``set`` comes from ``--aerospike-set``.
   primary, because those events stay on the node that owns the key. See
   [Keyspace notifications](docs/09-keyspace-notifications.md). `--mode replay`
   writes a recorded tail to Aerospike. See [Replay](docs/10-replay.md).
+  `--mode parity` shadow-reads Aerospike and stops when a mismatch is not TTL
+  skew or an in-flight write. See [Parity](docs/11-parity.md).
 - **Multithreaded pipeline** — A producer streams `SCAN` results into a **bounded
   queue**; a pool of **worker threads** (default 8, `--workers`) converts and writes
   in parallel so the run stays fast without loading the whole keyspace into memory.
