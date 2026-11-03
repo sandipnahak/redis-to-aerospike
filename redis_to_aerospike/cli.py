@@ -31,6 +31,7 @@ from .keyspace import (
     notification_db,
 )
 from .converters.registry import ConverterRegistry
+from .event_log import iter_event_log, load_obj, record_from_entry, replay_log
 from .log_banners import log_migration_banner
 from .migrator import Migrator
 from .pubsub_sync import PubSubRunner, probe_keyspace_notifications
@@ -94,6 +95,7 @@ _ARG_MAP: Dict[str, _CLIArgBinding] = {
     "pubsub_channel": (None, "pubsub_channel", PubSubChannel),
     "pubsub_refresh": (None, "pubsub_refresh_s", None),
     "sync_catchup": (None, "sync_catchup", None),
+    "event_log": (None, "event_log", None),
 }
 
 
@@ -347,7 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[mode.value for mode in RunMode],
         default=sup,
         help="scan once (default), pubsub (follow notify-keyspace-events), "
-        "or sync (scan, then follow)",
+        "sync (scan, then follow), or replay (write an event log to Aerospike)",
     )
     pipeline.add_argument(
         "--pubsub-channel",
@@ -369,6 +371,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=sup,
         help="sync only: subscribe before the scan and replay keys that change "
         "during the copy (closes the scan window)",
+    )
+    pipeline.add_argument(
+        "--event-log",
+        default=sup,
+        help="JSONL file of pub/sub changes in receive order. pubsub and sync "
+        "append to it. replay reads it and writes Aerospike",
     )
     pipeline.add_argument("--workers", type=int, default=sup, help="default: 8")
     pipeline.add_argument("--scan-batch", type=int, default=sup, help="default: 500")
@@ -625,7 +633,7 @@ def render_preview(
             f"    progress interval : {config.progress_interval}s",
         ]
     )
-    if config.mode is not RunMode.SCAN:
+    if config.mode in (RunMode.PUBSUB, RunMode.SYNC):
         family = select_channel_family(notify_flags, config.pubsub_channel)
         pattern = subscription_pattern(family, notification_db(config.redis))
         where = "each cluster primary" if config.redis.cluster else "the source"
@@ -644,6 +652,8 @@ def render_preview(
             lines.append(
                 f"    sync catchup : {'on' if config.sync_catchup else 'off'}"
             )
+    if config.mode in (RunMode.PUBSUB, RunMode.SYNC, RunMode.REPLAY):
+        lines.append(f"    event log   : {config.event_log or 'off'}")
     lines.append(estimate_line)
     return "\n".join(lines)
 
@@ -772,6 +782,60 @@ def apply_server_info(
         config.aerospike.max_record_size = server_max
 
 
+def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
+    """Write an event log to Aerospike in file order. Redis is not used."""
+    if not config.event_log:
+        logger.error(
+            "replay requires event_log, the JSONL file written by pubsub or sync"
+        )
+        return 2
+    registry = ConverterRegistry.from_config(config)
+    sink = AerospikeSink(config.aerospike)
+    try:
+        sink.connect()
+    except Exception as exc:
+        logger.error("cannot reach Aerospike: %s", exc)
+        return 2
+    stats = MigrationStats()
+    stats.start()
+    try:
+        if dry_run:
+            count = sum(1 for _entry in iter_event_log(config.event_log))
+            logger.info(
+                "dry run: %d event(s) in %s would be written",
+                count,
+                config.event_log,
+            )
+            return 0
+        migrator = Migrator(config, None, registry, sink, stats=stats)
+
+        def apply_entry(entry: dict[str, Any]) -> None:
+            stats.record_event()
+            action = entry.get("action")
+            if action == "delete":
+                migrator.delete_key(load_obj(entry["key"]))
+                return
+            if action == "upsert":
+                migrator.write_redis_record(record_from_entry(entry), full_replace=True)
+                return
+            stats.record_skipped(str(action or "unknown"))
+
+        written = replay_log(config.event_log, apply_entry)
+        logger.info("replayed %d event(s) from %s", written, config.event_log)
+    except (OSError, ValueError) as exc:
+        logger.error("cannot replay %s: %s", config.event_log, exc)
+        stats.record_error("event_log")
+    finally:
+        stats.finish()
+        sink.close()
+    report = stats.format_report()
+    if stats.errors:
+        logger.warning("\n%s", report)
+        return 1
+    logger.info("\n%s", report)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -788,6 +852,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     config = build_config(args)
+    if config.mode is RunMode.REPLAY:
+        return _run_replay(config, args.dry_run)
 
     source = RedisSource(config.redis)
     registry = ConverterRegistry.from_config(config)
@@ -820,7 +886,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
 
         notify_flags = None
-        if config.mode is not RunMode.SCAN:
+        if config.mode in (RunMode.PUBSUB, RunMode.SYNC):
             notify = coerce_notify_setting(source.notify_keyspace_events())
             if not notify.readable:
                 logger.info(

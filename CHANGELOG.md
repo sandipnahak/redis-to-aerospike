@@ -16,6 +16,7 @@ for installs and issue reports, not a formal product release cadence.
 ### Added
 
 - `sync_catchup` (`--sync-catchup`, `MIGRATION_SYNC_CATCHUP`) subscribes before a `sync` scan and replays keys that change during the copy. The scan window is otherwise dropped.
+- `event_log` records `pubsub` and `sync` changes in receive order. The file name gains a local timestamp before the extension. `--mode replay` writes a chosen file to Aerospike without reading Redis.
 - `--mode pubsub` and `--mode sync` follow Redis/MemoryDB keyspace notifications (`notify-keyspace-events`, such as `KEA` or `Ex`) and apply them in Aerospike. Cluster mode subscribes to every primary. See [Keyspace notifications](docs/09-keyspace-notifications.md).
 - [nsup-period](docs/08-nsup-period.md) explains the namespace supervisor, the per-node preflight check, and how to set `nsup-period` on every node.
 

@@ -103,6 +103,8 @@ def test_migration_mode_from_env_and_yaml():
     assert cfg.sync_catchup is True
     assert MigrationConfig.from_env({"MIGRATION_SYNC_CATCHUP": "true"}).sync_catchup is True
     assert MigrationConfig().sync_catchup is False
+    assert MigrationConfig.from_dict({"event_log": " events.jsonl "}).event_log == "events.jsonl"
+    assert MigrationConfig.from_env({"MIGRATION_EVENT_LOG": ""}).event_log is None
 
 
 def test_empty_password_env_becomes_none():

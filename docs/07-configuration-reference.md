@@ -157,10 +157,11 @@ and counts the key under **skipped** (`exists`) if a record already exists.
 | Hash strategy                | `--hash-strategy`       | `hash_strategy`       | `MIGRATION_HASH_STRATEGY`       | `map_bin` (`map_bin`/`field_bins`)         |
 | TTL overflow policy          | `--ttl-overflow-policy` | `ttl_overflow_policy` | `MIGRATION_TTL_OVERFLOW_POLICY` | `reject` (`reject`/`clamp`/`never_expire`) |
 | Progress interval (s)        | `--progress-interval`   | `progress_interval`   | `MIGRATION_PROGRESS_INTERVAL`   | `10`; `0` disables                         |
-| Run mode                     | `--mode`                | `mode`                | `MIGRATION_MODE`                | `scan` (`scan`/`pubsub`/`sync`)            |
+| Run mode                     | `--mode`                | `mode`                | `MIGRATION_MODE`                | `scan` (`scan`/`pubsub`/`sync`/`replay`)   |
 | Pub/sub channel family       | `--pubsub-channel`      | `pubsub_channel`      | `MIGRATION_PUBSUB_CHANNEL`      | `auto` (`auto`/`keyspace`/`keyevent`)      |
 | Pub/sub primary refresh (s)  | `--pubsub-refresh`      | `pubsub_refresh_s`    | `MIGRATION_PUBSUB_REFRESH`      | `30`; `0` subscribes once                  |
 | Sync catch-up                | `--sync-catchup`        | `sync_catchup`        | `MIGRATION_SYNC_CATCHUP`        | `false`; `sync` only                       |
+| Event log                    | `--event-log`           | `event_log`           | `MIGRATION_EVENT_LOG`           | unset; `pubsub`, `sync`, and `replay`      |
 
 
 Notes:
@@ -172,8 +173,10 @@ into Aerospike across all worker threads. Use them to keep a migration from
 overwhelming a busy source or target. Each allows a short burst of up to one
 second's worth of the configured rate.
 - `mode` selects a one-shot `scan`, a `pubsub` tail of `notify-keyspace-events`,
-or `sync` (scan, then tail). `sync_catchup: true` subscribes before that
-scan and replays keys that change during the copy. See [Keyspace notifications](09-keyspace-notifications.md).
+`sync` (scan, then tail), or `replay` (write an event log to Aerospike).
+`sync_catchup: true` subscribes before that scan and replays keys that change
+during the copy. `event_log` appends each pub/sub change in receive order.
+See [Keyspace notifications](09-keyspace-notifications.md).
 `pubsub_channel: auto` uses keyspace channels when the parameter contains `K`
 (`KEA`) and keyevent channels when it contains only `E` (`Ex`).
 - `write_batch_size > 1` inserts records using Aerospike `batch_write` instead of

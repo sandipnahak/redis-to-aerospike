@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .config import MigrationConfig, RedisConfig, RunMode
+from .event_log import EventLog, delete_entry, record_from_entry, upsert_entry
 from .converters.registry import ConverterRegistry
 from .keyspace import (
     KeyChange,
@@ -40,6 +41,14 @@ from .stats import MigrationStats
 logger = logging.getLogger(__name__)
 
 _STOP = object()
+
+
+@dataclass(frozen=True)
+class _Work:
+    """One notification plus the receive-order sequence reserved for the log."""
+
+    seq: int
+    change: KeyChange
 
 ConnectFn = Callable[[str, int], Any]
 DiscoverFn = Callable[[], list[tuple[str, int]]]
@@ -600,6 +609,7 @@ class PubSubRunner:
             if listener is None and config.sync_catchup and config.mode is RunMode.SYNC
             else None
         )
+        self._event_log: Optional[EventLog] = None
         self._listener = listener or KeyspaceListener(
             config,
             source.client,
@@ -623,6 +633,18 @@ class PubSubRunner:
         """
         self.stats.resume()
         try:
+            if self._config.event_log:
+                try:
+                    self._event_log = EventLog(self._config.event_log)
+                except OSError as exc:
+                    logger.error(
+                        "cannot open event log %s: %s", self._config.event_log, exc
+                    )
+                    self.stats.record_error("event_log")
+                    return self.stats
+                logger.info(
+                    "recording pub/sub changes in order to %s", self._event_log.path
+                )
             logger.info(
                 "pubsub channel %s pattern %s (notify-keyspace-events=%s)",
                 self._family,
@@ -661,6 +683,9 @@ class PubSubRunner:
             return self.stats
         finally:
             self._listener.stop()
+            if self._event_log is not None:
+                self._event_log.close()
+                self._event_log = None
             self.stats.finish()
 
     def _subscriptions_up(self) -> bool:
@@ -671,10 +696,23 @@ class PubSubRunner:
             return False
         return True
 
-    def apply(self, change: KeyChange) -> None:
-        """Apply one notification. Safe to call from worker threads."""
+    def apply(self, change: KeyChange, seq: Optional[int] = None) -> None:
+        """Apply one notification. Safe to call from worker threads.
+
+        When ``seq`` is set, the outcome is appended to the event log in
+        receive order, including when the Aerospike write fails.
+        """
+        entry = None
         try:
-            self._apply(change)
+            entry = self._capture(change)
+            if entry is None:
+                return
+            if entry["action"] == "delete":
+                self._migrator.delete_key(change.key)
+                return
+            self._migrator.write_redis_record(
+                record_from_entry(entry), full_replace=True
+            )
         except Exception as exc:
             self.stats.record_error(f"pubsub:{type(exc).__name__}")
             logger.warning(
@@ -683,29 +721,30 @@ class PubSubRunner:
                 change.event,
                 exc,
             )
+        finally:
+            if self._event_log is not None and seq is not None:
+                self._event_log.complete(seq, entry)
 
-    def _apply(self, change: KeyChange) -> None:
+    def _capture(self, change: KeyChange) -> Optional[dict[str, Any]]:
+        """Decide the log line for one notification. Does not write Aerospike."""
         self.stats.record_event()
         if not key_matches(change.key, self._config.redis.scan_match):
             self.stats.record_skipped("match")
-            return
+            return None
         if change.action == "ignore":
             self.stats.record_skipped(change.event)
-            return
+            return None
         self._event_limiter.acquire()
         if change.action == "delete":
-            self._migrator.delete_key(change.key)
-            return
+            return delete_entry(change.event, change.key)
 
         record = self._source.read_record(change.key)
         if record is None:
-            # The key disappeared between the notification and the read.
-            self._migrator.delete_key(change.key)
-            return
+            return delete_entry(change.event, change.key)
         if record.value is None or not self._registry.supports(record.type):
             self.stats.record_skipped(record.type or "unsupported")
-            return
-        self._migrator.write_redis_record(record, full_replace=True)
+            return None
+        return upsert_entry(change.event, record)
 
     def _follow(
         self, stop: threading.Event, prelude: Optional[list[KeyChange]] = None
@@ -726,7 +765,11 @@ class PubSubRunner:
             workers.append(thread)
 
         def enqueue(change: KeyChange) -> None:
-            queues[_shard(change.key, workers_n)].put(change)
+            if self._event_log is None:
+                queues[_shard(change.key, workers_n)].put(change)
+                return
+            seq = self._event_log.assign()
+            queues[_shard(change.key, workers_n)].put(_Work(seq, change))
 
         progress = ProgressReporter(self.stats, self._config.progress_interval).start()
         try:
@@ -746,13 +789,13 @@ class PubSubRunner:
             self._listener.stop()
             if self._catchup is not None:
                 for change in self._catchup.seal():
-                    queues[_shard(change.key, workers_n)].put(change)
+                    enqueue(change)
             while True:
                 try:
                     change = self._listener.queue.get_nowait()
                 except queue.Empty:
                     break
-                queues[_shard(change.key, workers_n)].put(change)
+                enqueue(change)
             for work in queues:
                 work.put(_STOP)
             for thread in workers:
@@ -765,7 +808,10 @@ class PubSubRunner:
             try:
                 if item is _STOP:
                     return
-                self.apply(item)
+                if isinstance(item, _Work):
+                    self.apply(item.change, item.seq)
+                else:
+                    self.apply(item)
             finally:
                 work.task_done()
 

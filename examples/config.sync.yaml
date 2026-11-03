@@ -12,6 +12,8 @@
 # pubsub_channel: auto selects the matching channel family.
 
 mode: sync
+# Append tail changes in receive order. The initial scan is not logged.
+# event_log: /var/log/redis2aerospike/events.jsonl
 pubsub_channel: auto
 pubsub_refresh_s: 30
 # Subscribe first so writes during the scan are not lost. Requires KEA

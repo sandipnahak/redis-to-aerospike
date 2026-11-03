@@ -50,6 +50,7 @@ parameter.
 | `scan` | [examples/config.scan.yaml](../examples/config.scan.yaml) | Copy the keyspace once and exit. |
 | `pubsub` | [examples/config.pubsub.yaml](../examples/config.pubsub.yaml) | Follow `notify-keyspace-events` only. |
 | `sync` | [examples/config.sync.yaml](../examples/config.sync.yaml) | Scan, then follow. |
+| `replay` | [examples/config.replay.yaml](../examples/config.replay.yaml) | Write an event log to Aerospike. |
 
 ```bash
 redis2aerospike --config examples/config.sync.yaml
@@ -83,6 +84,18 @@ keep them.
 
 `--mode sync` with `sync_catchup: false` (the default) copies the keyspace,
 then subscribes. Changes published **during** that scan are not replayed.
+
+`event_log` appends each pub/sub change to a JSONL file in the order it was
+received. The run inserts a local timestamp before the extension, so
+`migration/redis2aerospike-pubsub.jsonl` is written as
+`migration/redis2aerospike-pubsub-20261103T160300+0530.jsonl`. `sync` logs the
+tail, not the initial scan. Replay that stamped file with `--mode replay`,
+which talks only to Aerospike:
+
+```bash
+redis2aerospike --config /etc/redis2aerospike/config.yaml --mode replay \
+  --event-log /var/log/redis2aerospike/events-20261103T160300+0530.jsonl
+```
 
 `sync_catchup: true` subscribes before the scan. Each key that changes during
 the copy is replayed once the scan finishes, then the live tail continues.

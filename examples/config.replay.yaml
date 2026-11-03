@@ -1,0 +1,28 @@
+# Write an event log into Aerospike, in file order. Redis is not contacted.
+#
+#   redis2aerospike --config examples/config.replay.yaml
+#
+# The file is produced by pubsub or sync when event_log is set.
+# Preview the file without writing:
+#   redis2aerospike --config examples/config.replay.yaml --dry-run
+
+mode: replay
+event_log: /var/log/redis2aerospike/events.jsonl
+
+aerospike:
+  host: aerospike.example
+  port: 3000
+  namespace: test
+  set_name: redis
+  value_bin: value
+  record_exists_policy: replace
+  set_routes:
+    - pattern: "user:*"
+      destination: users
+    - pattern: "session:*"
+      destination: sessions
+
+workers: 1
+write_rate_limit: 2000
+ttl_overflow_policy: reject
+progress_interval: 10

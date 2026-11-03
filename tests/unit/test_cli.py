@@ -679,3 +679,49 @@ def test_print_completion_does_not_connect(monkeypatch, capsys):
     monkeypatch.setattr(cli, "AerospikeSink", _fail_if_called)
     assert cli.main(["--print-completion", "bash"]) == 0
     assert "redis2aerospike" in capsys.readouterr().out
+
+
+def test_replay_requires_an_event_log(monkeypatch):
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("replay without a log must not connect")
+
+    monkeypatch.setattr(cli, "RedisSource", _fail_if_called)
+    monkeypatch.setattr(cli, "AerospikeSink", _fail_if_called)
+    assert cli.main(["--mode", "replay"]) == 2
+
+
+def test_replay_writes_the_log_in_order(monkeypatch, tmp_path):
+    from redis_to_aerospike.event_log import EventLog, upsert_entry
+    from redis_to_aerospike.models import RedisRecord
+
+    path = tmp_path / "events.jsonl"
+    log = EventLog(str(path), stamp=False)
+    log.complete(
+        log.assign(),
+        upsert_entry("set", RedisRecord(key="a", type="string", value=b"one", ttl_ms=None)),
+    )
+    log.complete(log.assign(), {"action": "delete", "event": "del", "key": "a"})
+    log.close()
+
+    seen = []
+
+    class _ReplaySink:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            return self
+
+        def close(self):
+            pass
+
+        def write(self, record):
+            seen.append(("write", record.key))
+
+        def remove(self, key, set_name=None):
+            seen.append(("delete", key))
+
+    monkeypatch.setattr(cli, "RedisSource", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("replay reads no redis")))
+    monkeypatch.setattr(cli, "AerospikeSink", _ReplaySink)
+    assert cli.main(["--mode", "replay", "--event-log", str(path)]) == 0
+    assert seen == [("write", "a"), ("delete", "a")]

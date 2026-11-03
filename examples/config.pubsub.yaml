@@ -13,6 +13,8 @@
 #   keyspace for KEA, keyevent for Ex.
 
 mode: pubsub
+# Append each change in receive order. Replay with --mode replay.
+# event_log: /var/log/redis2aerospike/events.jsonl
 pubsub_channel: auto
 # How often to rediscover cluster primaries after a failover. 0 subscribes once.
 pubsub_refresh_s: 30

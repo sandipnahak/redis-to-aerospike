@@ -143,11 +143,13 @@ class RunMode(str, Enum):
     * ``SCAN``   -- one pass over the keyspace (the default).
     * ``PUBSUB`` -- follow keyspace notifications until interrupted.
     * ``SYNC``   -- scan the keyspace, then follow notifications.
+    * ``REPLAY`` -- write an event log into Aerospike, in file order, without Redis.
     """
 
     SCAN = "scan"
     PUBSUB = "pubsub"
     SYNC = "sync"
+    REPLAY = "replay"
 
 
 class PubSubChannel(str, Enum):
@@ -162,6 +164,13 @@ class PubSubChannel(str, Enum):
     AUTO = "auto"
     KEYSPACE = "keyspace"
     KEYEVENT = "keyevent"
+
+
+def _parse_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -528,6 +537,10 @@ class MigrationConfig:
     # during the copy, so that window is not dropped. Default off: the scan
     # finishes, then the subscription starts, and changes in between are missed.
     sync_catchup: bool = False
+    # JSONL file of pub/sub changes in receive order. ``pubsub`` and ``sync``
+    # append to it. ``replay`` reads it and writes Aerospike. Unset disables
+    # the log.
+    event_log: Optional[str] = None
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "MigrationConfig":
@@ -566,6 +579,7 @@ class MigrationConfig:
             sync_catchup=_parse_bool(
                 lookup.get("MIGRATION_SYNC_CATCHUP"), default=cls.sync_catchup
             ),
+            event_log=_parse_optional_str(lookup.get("MIGRATION_EVENT_LOG")),
         )
 
     @classmethod
@@ -595,6 +609,8 @@ class MigrationConfig:
             cfg.pubsub_channel = _parse_pubsub_channel(data.pop("pubsub_channel"))
         if "sync_catchup" in data:
             cfg.sync_catchup = _parse_bool(data.pop("sync_catchup"))
+        if "event_log" in data:
+            cfg.event_log = _parse_optional_str(data.pop("event_log"))
 
         for key, value in data.items():
             if hasattr(cfg, key):
