@@ -15,36 +15,49 @@ is the full Redis key and ``set`` comes from ``--aerospike-set``.
 ## Main features
 
 - **Native Aerospike types** — Migrates Redis strings, hashes, lists, sets, and
-  sorted sets (plus TTLs) into appropriate bins, lists, and maps; unsupported types
-  (e.g. Streams) are skipped and counted in the summary.
+  sorted sets (plus TTLs) into bins, lists, and maps. Unsupported types such as
+  Streams are skipped and counted in the summary.
+  See [Transferring data](docs/04-transferring-data.md).
+- **One-shot scan** — `--mode scan` (the default) copies the keyspace once with
+  `SCAN` and exits.
 - **Keyspace notifications** — `--mode pubsub` follows MemoryDB/Redis
-  `notify-keyspace-events` (for example `KEA` or `Ex`) and applies each change.
-  `--mode sync` scans first, then follows. `sync_catchup` subscribes before
-  the scan and replays keys that change during the copy. Cluster mode subscribes to every
-  primary, because those events stay on the node that owns the key. See
-  [Keyspace notifications](docs/09-keyspace-notifications.md). `--mode replay`
-  writes a recorded tail to Aerospike. See [Replay](docs/10-replay.md).
-  `--mode parity` shadow-reads Aerospike and stops when a mismatch is not TTL
-  skew or an in-flight write. See [Parity](docs/11-parity.md).
-- **Multithreaded pipeline** — A producer streams `SCAN` results into a **bounded
-  queue**; a pool of **worker threads** (default 8, `--workers`) converts and writes
-  in parallel so the run stays fast without loading the whole keyspace into memory.
+  `notify-keyspace-events` (`KEA` or `Ex`) and applies each change until
+  interrupted. `--mode sync` scans first, then follows. `sync_catchup` subscribes
+  before the scan and replays keys that change during the copy. Cluster mode
+  subscribes to every primary, because those events stay on the node that owns
+  the key. See [Keyspace notifications](docs/09-keyspace-notifications.md).
+- **Event log and replay** — `pubsub` and `sync` can append each tail change to
+  a JSONL file in receive order. The file name gets a local timestamp, and each
+  line has `seq` plus a `time` stamp for tracking. `--mode replay` writes that
+  file to Aerospike without reading Redis. `--from-seq` starts at that sequence.
+  A line is skipped when the Aerospike record is already newer. See
+  [Replay](docs/10-replay.md).
+- **Parity** — `--mode parity` shadow-reads a sample of MemoryDB keys from
+  Aerospike (default 1 percent; `--parity-sample 1` checks every key). It
+  reports the mismatch rate, missing keys, and Aerospike read latency
+  (p50, p95, p99). Exit code 1 means a mismatch is not TTL skew or an in-flight
+  write, so cutover should wait. See [Parity](docs/11-parity.md).
+- **Multithreaded pipeline** — A producer streams `SCAN` results into a bounded
+  queue. A pool of worker threads (default 8, `--workers`) converts and writes
+  in parallel, so the run stays fast without loading the whole keyspace into memory.
 - **Key placement** — Narrow the source with Redis `SCAN` `MATCH`
-  (`redis.scan_match`, `--redis-match`); optionally map key patterns to Aerospike
-  sets (and shorter user keys) with `set_routes` / `--set-route`. See
+  (`redis.scan_match`, `--redis-match`). Map key patterns to Aerospike sets and
+  shorter user keys with `set_routes` / `--set-route`. See
   [Transferring data](docs/04-transferring-data.md).
-- **Flexible configuration** — **CLI**, **YAML** (`--config`), and **environment
-  variables**; any CLI flag you pass overrides the matching YAML value
-  ([Configuration reference](docs/07-configuration-reference.md)).
-- **Serious connectivity** — Redis or Valkey standalone or **Cluster**, **TLS** / mutual TLS,
-  **ACL** auth, and connection **URLs**; Aerospike **multi-host**, Enterprise **auth**
-  modes, **TLS** / mutual TLS, and client timeouts ([Redis](docs/02-connecting-redis.md),
-  [Aerospike](docs/03-connecting-aerospike.md)).
-- **Tuning and safety** — Scan and write **rate limits**, **batch** writes to
-  Aerospike, **record-exists** policies (merge, full replace, or create-only),
-  hash layout strategies, **TTL overflow** policies, dry-run **preview**,
-  namespace checks, progress **heartbeat**, and a final **summary** (throughput,
-  skips, errors) with meaningful **exit codes** ([Running and tuning](docs/05-running-and-tuning.md)).
+- **Flexible configuration** — CLI flags, YAML (`--config`), and environment
+  variables. A flag you pass overrides the matching YAML value. Environment
+  variables are not merged into `--config`. See the
+  [configuration reference](docs/07-configuration-reference.md).
+- **Connectivity** — Redis or Valkey standalone or cluster, TLS, mutual TLS,
+  ACL auth, and connection URLs. Aerospike multi-host, Enterprise auth, TLS,
+  mutual TLS, and client timeouts. See [Redis](docs/02-connecting-redis.md) and
+  [Aerospike](docs/03-connecting-aerospike.md).
+- **Tuning and safety** — Scan and write rate limits, batch writes, record-exists
+  policies (merge, full replace, or create-only), hash layout, TTL overflow
+  policy, dry-run preview, namespace and `nsup-period` checks, a progress
+  heartbeat, and a final summary with exit codes. See
+  [Running and tuning](docs/05-running-and-tuning.md) and
+  [nsup-period](docs/08-nsup-period.md).
 
 > **New here?** The [user guide](docs/README.md) has step-by-step instructions
 > for installing, connecting each database, transferring data, tuning, and
@@ -212,6 +225,10 @@ python scripts/sample_redis_seed_routing.py --per-route 50   # small fixed layou
 Then run `redis2aerospike` with the same Redis host/port against your Aerospike
 namespace.
 
+[`scripts/sample_memorydb_seed.py`](scripts/sample_memorydb_seed.py) writes the
+same `sample:migrate:` keys to Amazon MemoryDB. It uses the cluster client
+and TLS. Username and password are optional. It does not call `FLUSHDB`.
+
 ## Configuring the tool
 
 You can configure the tool three ways, and mix them:
@@ -220,7 +237,7 @@ You can configure the tool three ways, and mix them:
 - **A YAML file** -- pass it with `--config myconfig.yaml`. The YAML is the base;
   any CLI flag you also pass overrides the matching value. See
   [`config.example.yaml`](config.example.yaml) for an annotated template, and
-  [`examples/`](examples) for ready-to-run `scan`, `pubsub`, and `sync` configs.
+  [`examples/`](examples) for ready-to-run `scan`, `pubsub`, `sync`, `replay`, and `parity` configs.
 - **Environment variables** -- `REDIS_*`, `AEROSPIKE_*`, `MIGRATION_*`. Best for
   secrets and containers.
 
@@ -261,15 +278,22 @@ Exit codes: `0` success, `1` completed with errors, `2` could not connect. See
 
 ## Documentation
 
+The operator guide starts at [docs/README.md](docs/README.md). These are the references:
+
 | Guide | What it covers |
 | --- | --- |
 | [Getting started](docs/01-getting-started.md) | Install, verify, first migration end to end. |
 | [Connecting to Redis](docs/02-connecting-redis.md) | Host/port/db, auth, URLs, TLS, Cluster (Redis, Valkey, RESP-compatible). |
 | [Connecting to Aerospike](docs/03-connecting-aerospike.md) | Hosts, namespace/set, auth, TLS, timeouts. |
 | [Transferring data](docs/04-transferring-data.md) | Type mapping, TTLs, subsets, re-runs. |
-| [Running and tuning](docs/05-running-and-tuning.md) | Config methods, performance, output, exit codes. |
+| [Running and tuning](docs/05-running-and-tuning.md) | Config methods, performance, output, exit codes, background and systemd. |
 | [Troubleshooting](docs/06-troubleshooting.md) | Common failures and fixes. |
 | [Configuration reference](docs/07-configuration-reference.md) | Every flag, YAML key, env var, and default. |
+| [nsup-period](docs/08-nsup-period.md) | Namespace supervisor, the per-node preflight check, and how to set it. |
+| [Keyspace notifications](docs/09-keyspace-notifications.md) | `notify-keyspace-events` (`KEA`, `Ex`), `--mode pubsub`, and `--mode sync`. |
+| [Replay](docs/10-replay.md) | Event log, `--mode replay`, and `--from-seq`. |
+| [Parity](docs/11-parity.md) | Sampled shadow reads, mismatch rate, latency percentiles, and the cutover gate. |
+| [Changelog](CHANGELOG.md) | Notable changes by version. |
 
 ## Contributing
 

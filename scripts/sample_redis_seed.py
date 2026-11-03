@@ -8,6 +8,9 @@ exercised.
 
 Requires ``redis`` (``pip install redis`` or install this project).
 
+This client is standalone Redis. For MemoryDB use
+``scripts/sample_memorydb_seed.py`` (cluster, TLS, ACL username).
+
 Example::
 
     docker compose up -d
@@ -139,6 +142,11 @@ def parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
     p.add_argument("--db", type=int, default=0, help="Redis logical database")
     p.add_argument("--password", default=None, help="Redis password (if required)")
     p.add_argument(
+        "--tls",
+        action="store_true",
+        help="Connect with TLS. Off by default for a local Redis.",
+    )
+    p.add_argument(
         "--count",
         type=int,
         default=10_000,
@@ -165,6 +173,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         port=args.port,
         db=args.db,
         password=args.password,
+        ssl=args.tls,
         decode_responses=True,
     )
     try:
