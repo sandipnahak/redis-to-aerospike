@@ -19,7 +19,8 @@ is the full Redis key and ``set`` comes from ``--aerospike-set``.
   (e.g. Streams) are skipped and counted in the summary.
 - **Keyspace notifications** — `--mode pubsub` follows MemoryDB/Redis
   `notify-keyspace-events` (for example `KEA` or `Ex`) and applies each change.
-  `--mode sync` scans first, then follows. Cluster mode subscribes to every
+  `--mode sync` scans first, then follows. `sync_catchup` subscribes before
+  the scan and replays keys that change during the copy. Cluster mode subscribes to every
   primary, because those events stay on the node that owns the key. See
   [Keyspace notifications](docs/09-keyspace-notifications.md).
 - **Multithreaded pipeline** — A producer streams `SCAN` results into a **bounded

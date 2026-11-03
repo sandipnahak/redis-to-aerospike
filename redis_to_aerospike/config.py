@@ -164,6 +164,14 @@ class PubSubChannel(str, Enum):
     KEYEVENT = "keyevent"
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_run_mode(value: Any) -> RunMode:
     if isinstance(value, RunMode):
         return value
@@ -516,6 +524,10 @@ class MigrationConfig:
     # How often, in seconds, to rediscover cluster primaries while following
     # notifications. ``0`` subscribes once and stays on those nodes.
     pubsub_refresh_s: float = 30.0
+    # ``sync`` only. Subscribe before the scan and replay keys that change
+    # during the copy, so that window is not dropped. Default off: the scan
+    # finishes, then the subscription starts, and changes in between are missed.
+    sync_catchup: bool = False
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "MigrationConfig":
@@ -551,6 +563,9 @@ class MigrationConfig:
             pubsub_refresh_s=float(
                 lookup.get("MIGRATION_PUBSUB_REFRESH", cls.pubsub_refresh_s)
             ),
+            sync_catchup=_parse_bool(
+                lookup.get("MIGRATION_SYNC_CATCHUP"), default=cls.sync_catchup
+            ),
         )
 
     @classmethod
@@ -578,6 +593,8 @@ class MigrationConfig:
             cfg.mode = _parse_run_mode(data.pop("mode"))
         if "pubsub_channel" in data:
             cfg.pubsub_channel = _parse_pubsub_channel(data.pop("pubsub_channel"))
+        if "sync_catchup" in data:
+            cfg.sync_catchup = _parse_bool(data.pop("sync_catchup"))
 
         for key, value in data.items():
             if hasattr(cfg, key):

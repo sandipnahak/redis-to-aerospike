@@ -13,14 +13,17 @@ import logging
 import queue
 import threading
 import time
+import uuid
 import zlib
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .config import MigrationConfig, RedisConfig
+from .config import MigrationConfig, RedisConfig, RunMode
 from .converters.registry import ConverterRegistry
 from .keyspace import (
     KeyChange,
+    KeyspaceNotifyConfig,
     key_matches,
     notification_db,
     parse_notification,
@@ -40,6 +43,58 @@ _STOP = object()
 
 ConnectFn = Callable[[str, int], Any]
 DiscoverFn = Callable[[], list[tuple[str, int]]]
+
+
+class CatchupBuffer:
+    """Latest notification per key while a scan is still writing.
+
+    The listener drains Redis immediately, so the server-side pub/sub buffer
+    stays small, but nothing is applied until the scan has finished. Applying
+    during the scan would let a slow SCAN write overwrite a newer value.
+    After :meth:`release`, further events sit in an unbounded side list until
+    :meth:`seal` hands them to the live tail, in order.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: dict[str | bytes, KeyChange] = {}
+        self._released = False
+        self._ahead: Optional[deque[KeyChange]] = None
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    def offer(self, change: KeyChange) -> bool:
+        """Keep ``change`` here. Return False when the live queue must take it."""
+        with self._lock:
+            if not self._released:
+                # keymiss is not a write. Replacing a real change with it would
+                # skip the replay of a key that was updated earlier in the scan.
+                if change.action != "ignore":
+                    self._pending[change.key] = change
+                return True
+            if self._ahead is not None:
+                self._ahead.append(change)
+                return True
+            return False
+
+    def release(self) -> list[KeyChange]:
+        """Close the scan window. Return one change per key, oldest key first."""
+        with self._lock:
+            batch = list(self._pending.values())
+            self._pending.clear()
+            self._released = True
+            if self._ahead is None:
+                self._ahead = deque()
+            return batch
+
+    def seal(self) -> list[KeyChange]:
+        """Stop the side list. Return events that arrived after :meth:`release`."""
+        with self._lock:
+            items = list(self._ahead or [])
+            self._ahead = None
+            return items
 
 
 def primary_endpoints(client: Any, config: RedisConfig) -> list[tuple[str, int]]:
@@ -72,6 +127,198 @@ def primary_endpoints(client: Any, config: RedisConfig) -> list[tuple[str, int]]
     return endpoints
 
 
+def probe_keyspace_notifications(
+    config: MigrationConfig,
+    client: Any,
+    *,
+    connect: Optional[ConnectFn] = None,
+    discover: Optional[DiscoverFn] = None,
+    write_timeout_s: float = 3.0,
+    expire_timeout_s: float = 3.0,
+    expire_wait_s: float = 0.3,
+) -> KeyspaceNotifyConfig:
+    """Confirm notifications by writing a temporary key.
+
+    MemoryDB does not implement ``CONFIG GET``. A rejected read is not evidence
+    that ``notify-keyspace-events`` is off. This subscribes on every primary,
+    writes ``redis2aerospike:notify-probe:<id>``, and waits for that key's
+    event. A write event means the parameter publishes changes (``KEA``).
+    No write event, then an ``expired`` event, means ``Ex``. No event means
+    notifications are not active. The key is deleted before this returns.
+    """
+    key = f"redis2aerospike:notify-probe:{uuid.uuid4().hex}"
+    db = notification_db(config.redis)
+    patterns = (
+        subscription_pattern("keyspace", db),
+        subscription_pattern("keyevent", db),
+    )
+    connect_fn = connect or (lambda host, port: open_node_client(config.redis, host, port))
+    discover_fn = discover or (lambda: primary_endpoints(client, config.redis))
+    try:
+        endpoints = discover_fn()
+    except Exception as exc:
+        return KeyspaceNotifyConfig(detail=f"probe failed: {exc}")
+    if not endpoints:
+        return KeyspaceNotifyConfig(detail="probe failed: no primary nodes")
+
+    found: queue.Queue[KeyChange] = queue.Queue()
+    stop = threading.Event()
+    ready: list[threading.Event] = []
+    threads: list[threading.Thread] = []
+    for host, port in endpoints:
+        gate = threading.Event()
+        ready.append(gate)
+        thread = threading.Thread(
+            target=_probe_subscribe,
+            args=(connect_fn, host, port, patterns, db, key, found, stop, gate),
+            name=f"notify-probe-{host}:{port}",
+            daemon=True,
+        )
+        threads.append(thread)
+        thread.start()
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not all(gate.is_set() for gate in ready):
+        time.sleep(0.01)
+    if not any(gate.is_set() for gate in ready):
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=2)
+        return KeyspaceNotifyConfig(detail="probe failed: no node accepted the subscription")
+
+    try:
+        try:
+            client.set(key, b"1", px=15_000)
+        except Exception as exc:
+            return KeyspaceNotifyConfig(detail=f"probe failed: {exc}")
+        change = _wait_probe(found, write_timeout_s)
+        if change is not None and change.event != "expired":
+            logger.info(
+                "notify-keyspace-events is active (test write produced %s)",
+                change.event,
+            )
+            return KeyspaceNotifyConfig(
+                flags="KEA",
+                readable=True,
+                present=True,
+                detail="confirmed by a test write",
+            )
+        if change is not None and change.event == "expired":
+            logger.info("notify-keyspace-events is active for expired keys only")
+            return KeyspaceNotifyConfig(
+                flags="Ex",
+                readable=True,
+                present=True,
+                detail="confirmed by an expiring test key",
+            )
+        try:
+            client.delete(key)
+        except Exception:
+            logger.debug("could not delete notify probe key before the expiry check", exc_info=True)
+        try:
+            client.set(key, b"1", px=200)
+        except Exception as exc:
+            return KeyspaceNotifyConfig(detail=f"probe failed: {exc}")
+        time.sleep(expire_wait_s)
+        try:
+            client.get(key)
+        except Exception:
+            logger.debug("expiry probe read failed", exc_info=True)
+        change = _wait_probe(found, expire_timeout_s)
+        if change is not None and change.event == "expired":
+            logger.info("notify-keyspace-events is active for expired keys only")
+            return KeyspaceNotifyConfig(
+                flags="Ex",
+                readable=True,
+                present=True,
+                detail="confirmed by an expiring test key",
+            )
+        if change is not None:
+            logger.info(
+                "notify-keyspace-events is active (test write produced %s)",
+                change.event,
+            )
+            return KeyspaceNotifyConfig(
+                flags="KEA",
+                readable=True,
+                present=True,
+                detail="confirmed by a test write",
+            )
+        logger.error(
+            "notify probe key %s produced no notification; "
+            "notify-keyspace-events is not active",
+            key,
+        )
+        return KeyspaceNotifyConfig(readable=True, present=False, detail="probe")
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=2)
+        try:
+            client.delete(key)
+        except Exception:
+            logger.debug("could not delete notify probe key %s", key, exc_info=True)
+
+
+def _probe_subscribe(
+    connect: ConnectFn,
+    host: str,
+    port: int,
+    patterns: tuple[str, str],
+    db: int,
+    key: str,
+    found: "queue.Queue[KeyChange]",
+    stop: threading.Event,
+    ready: threading.Event,
+) -> None:
+    client = None
+    pubsub = None
+    try:
+        client = connect(host, port)
+        pubsub = client.pubsub(ignore_subscribe_messages=True)
+        pubsub.psubscribe(*patterns)
+        ready.set()
+        while not stop.is_set():
+            try:
+                message = pubsub.get_message(timeout=0.5)
+            except Exception as exc:
+                logger.debug("notify probe read failed on %s:%s: %s", host, port, exc)
+                break
+            if not message or message.get("type") != "pmessage":
+                continue
+            change = parse_notification(message.get("channel"), message.get("data"), db)
+            if change is None or change.key != key or change.action == "ignore":
+                continue
+            found.put(change)
+    except Exception as exc:
+        logger.debug("notify probe subscribe failed on %s:%s: %s", host, port, exc)
+    finally:
+        ready.set()
+        _close_quietly(pubsub)
+        _close_quietly(client)
+
+
+def _wait_probe(found: "queue.Queue[KeyChange]", timeout_s: float) -> KeyChange | None:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return found.get(timeout=min(0.2, remaining))
+        except queue.Empty:
+            continue
+
+
+def _close_quietly(obj: Any) -> None:
+    if obj is None:
+        return
+    try:
+        obj.close()
+    except Exception:
+        pass
+
+
 @dataclass
 class _Subscription:
     endpoint: tuple[str, int]
@@ -98,6 +345,7 @@ class KeyspaceListener:
         db: int,
         connect: Optional[ConnectFn] = None,
         discover: Optional[DiscoverFn] = None,
+        catchup: Optional[CatchupBuffer] = None,
     ):
         self._config = config
         self._client = client
@@ -105,6 +353,7 @@ class KeyspaceListener:
         self._db = db
         self._connect = connect or (lambda host, port: open_node_client(config.redis, host, port))
         self._discover = discover or (lambda: primary_endpoints(client, config.redis))
+        self._catchup = catchup
         self._queue: queue.Queue[KeyChange] = queue.Queue(maxsize=max(1, config.queue_size))
         self._stop = threading.Event()
         self._first_pass = threading.Event()
@@ -302,6 +551,8 @@ class KeyspaceListener:
             self._close_quietly(client)
 
     def _put(self, change: KeyChange, sub: _Subscription) -> None:
+        if self._catchup is not None and self._catchup.offer(change):
+            return
         while not sub.stop.is_set() and not self._stop.is_set():
             try:
                 self._queue.put(change, timeout=0.5)
@@ -344,11 +595,17 @@ class PubSubRunner:
         db = notification_db(config.redis)
         self._family = family
         self._pattern = subscription_pattern(family, db)
+        self._catchup = (
+            CatchupBuffer()
+            if listener is None and config.sync_catchup and config.mode is RunMode.SYNC
+            else None
+        )
         self._listener = listener or KeyspaceListener(
             config,
             source.client,
             pattern=self._pattern,
             db=db,
+            catchup=self._catchup,
         )
 
     def run(
@@ -358,31 +615,61 @@ class PubSubRunner:
     ) -> MigrationStats:
         """Follow notifications until ``stop`` is set.
 
-        ``before_follow`` runs first when the mode is sync, so the keyspace
-        copy finishes before the tail starts. Events published during that
-        scan are not buffered.
+        Without catch-up, ``before_follow`` runs first and the subscription
+        starts afterward. Events published during that scan are not buffered.
+        With ``sync_catchup``, the subscription starts first, ``before_follow``
+        is the scan, and keys that changed during the scan are replayed before
+        the live tail.
         """
         self.stats.resume()
         try:
-            if before_follow is not None:
-                before_follow()
-                self.stats.resume()
             logger.info(
                 "pubsub channel %s pattern %s (notify-keyspace-events=%s)",
                 self._family,
                 self._pattern,
                 self._notify_flags if self._notify_flags is not None else "unreadable",
             )
-            live = self._listener.start()
-            if live == 0:
-                self.stats.record_error("pubsub:connect")
-                logger.error("no Redis nodes accepted a keyspace subscription")
-                return self.stats
-            self._follow(stop)
+            early = self._catchup is not None
+            if early:
+                if not self._subscriptions_up():
+                    return self.stats
+                logger.info(
+                    "subscribed before the scan; keys that change during the copy are replayed"
+                )
+                flags = self._notify_flags or ""
+                if "A" not in flags.upper():
+                    logger.warning(
+                        "sync_catchup only replays events that notify-keyspace-events "
+                        "publishes (%s). KEA covers writes, deletes, and expiries; "
+                        "Ex covers expiries only.",
+                        flags or "unreadable",
+                    )
+            if before_follow is not None:
+                before_follow()
+                self.stats.resume()
+            replay: list[KeyChange] = []
+            if early and self._catchup is not None:
+                replay = self._catchup.release()
+                logger.info(
+                    "scan finished; replaying %d key(s) that changed during the copy",
+                    len(replay),
+                )
+            else:
+                if not self._subscriptions_up():
+                    return self.stats
+            self._follow(stop, prelude=replay)
             return self.stats
         finally:
             self._listener.stop()
             self.stats.finish()
+
+    def _subscriptions_up(self) -> bool:
+        live = self._listener.start()
+        if live == 0:
+            self.stats.record_error("pubsub:connect")
+            logger.error("no Redis nodes accepted a keyspace subscription")
+            return False
+        return True
 
     def apply(self, change: KeyChange) -> None:
         """Apply one notification. Safe to call from worker threads."""
@@ -420,7 +707,9 @@ class PubSubRunner:
             return
         self._migrator.write_redis_record(record, full_replace=True)
 
-    def _follow(self, stop: threading.Event) -> None:
+    def _follow(
+        self, stop: threading.Event, prelude: Optional[list[KeyChange]] = None
+    ) -> None:
         workers_n = max(1, self._config.workers)
         queues: list[queue.Queue] = [
             queue.Queue(maxsize=max(1, self._config.queue_size)) for _ in range(workers_n)
@@ -435,16 +724,29 @@ class PubSubRunner:
             )
             thread.start()
             workers.append(thread)
+
+        def enqueue(change: KeyChange) -> None:
+            queues[_shard(change.key, workers_n)].put(change)
+
         progress = ProgressReporter(self.stats, self._config.progress_interval).start()
         try:
+            for change in prelude or []:
+                enqueue(change)
+            if self._catchup is not None:
+                # Events that landed while the scan-window batch was queued.
+                for change in self._catchup.seal():
+                    enqueue(change)
             while not stop.is_set():
                 try:
                     change = self._listener.queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                queues[_shard(change.key, workers_n)].put(change)
+                enqueue(change)
         finally:
             self._listener.stop()
+            if self._catchup is not None:
+                for change in self._catchup.seal():
+                    queues[_shard(change.key, workers_n)].put(change)
             while True:
                 try:
                     change = self._listener.queue.get_nowait()

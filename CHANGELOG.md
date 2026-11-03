@@ -11,10 +11,11 @@ for installs and issue reports, not a formal product release cadence.
 
 ### Changed
 
-- `pubsub` and `sync` exit with code 2 when `notify-keyspace-events` is missing, empty, or `CONFIG GET` cannot read it. The previous run continued after that warning and exited 0.
+- When MemoryDB rejects `CONFIG GET`, `pubsub` and `sync` check `notify-keyspace-events` by writing a temporary key and waiting for its notification. No notification exits with code 2. A successful `CONFIG GET` that shows the parameter missing or empty still exits with code 2.
 
 ### Added
 
+- `sync_catchup` (`--sync-catchup`, `MIGRATION_SYNC_CATCHUP`) subscribes before a `sync` scan and replays keys that change during the copy. The scan window is otherwise dropped.
 - `--mode pubsub` and `--mode sync` follow Redis/MemoryDB keyspace notifications (`notify-keyspace-events`, such as `KEA` or `Ex`) and apply them in Aerospike. Cluster mode subscribes to every primary. See [Keyspace notifications](docs/09-keyspace-notifications.md).
 - [nsup-period](docs/08-nsup-period.md) explains the namespace supervisor, the per-node preflight check, and how to set `nsup-period` on every node.
 

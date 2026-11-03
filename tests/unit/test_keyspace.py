@@ -9,6 +9,7 @@ from redis_to_aerospike.keyspace import (
     normalize_notify_flags,
     notification_block_reason,
     notification_db,
+    notification_warning,
     parse_notification,
     select_channel_family,
     standalone_endpoint,
@@ -96,12 +97,22 @@ def test_normalize_notify_flags_reads_standalone_and_cluster_replies():
     assert normalize_notify_flags({"timeout": "1"}) is None
 
 
-def test_unreadable_parameter_blocks_pubsub_and_sync():
-    unread = KeyspaceNotifyConfig(detail="NOPERM config")
-    reason = notification_block_reason(unread, "keyspace")
+def test_unreadable_parameter_warns_and_does_not_block():
+    unread = KeyspaceNotifyConfig(
+        detail="unknown command 'CONFIG', with args beginning with: 'GET'"
+    )
+    warning = notification_warning(unread, "keyspace")
+    assert warning is not None
+    assert "Could not read" in warning
+    assert "unknown command 'CONFIG'" in warning
+    assert notification_block_reason(unread, "keyspace") is None
+
+
+def test_probe_miss_blocks_pubsub_and_sync():
+    missed = KeyspaceNotifyConfig(readable=True, present=False, detail="probe")
+    reason = notification_block_reason(missed, "keyspace")
     assert reason is not None
-    assert "not found" in reason
-    assert "NOPERM config" in reason
+    assert "not active" in reason
 
 
 def test_missing_parameter_blocks_pubsub_and_sync():
@@ -110,7 +121,8 @@ def test_missing_parameter_blocks_pubsub_and_sync():
     for setting in (missing, empty):
         reason = notification_block_reason(setting, "keyspace")
         assert reason is not None
-        assert "not found" in reason
+        assert "not set" in reason
+        assert notification_warning(setting, "keyspace") is None
 
 
 def test_parameter_without_channel_letter_blocks():

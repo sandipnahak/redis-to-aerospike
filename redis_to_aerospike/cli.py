@@ -25,6 +25,7 @@ from .config import (
 from .keyspace import (
     coerce_notify_setting,
     notification_block_reason,
+    notification_warning,
     select_channel_family,
     subscription_pattern,
     notification_db,
@@ -32,7 +33,7 @@ from .keyspace import (
 from .converters.registry import ConverterRegistry
 from .log_banners import log_migration_banner
 from .migrator import Migrator
-from .pubsub_sync import PubSubRunner
+from .pubsub_sync import PubSubRunner, probe_keyspace_notifications
 from .redis_source import RedisSource
 from .stats import MigrationStats
 from .version import __version__
@@ -92,6 +93,7 @@ _ARG_MAP: Dict[str, _CLIArgBinding] = {
     "mode": (None, "mode", RunMode),
     "pubsub_channel": (None, "pubsub_channel", PubSubChannel),
     "pubsub_refresh": (None, "pubsub_refresh_s", None),
+    "sync_catchup": (None, "sync_catchup", None),
 }
 
 
@@ -360,6 +362,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=sup,
         help="seconds between cluster primary rediscovery in pub/sub mode; "
         "0 subscribes once (default: 30)",
+    )
+    pipeline.add_argument(
+        "--sync-catchup",
+        action="store_true",
+        default=sup,
+        help="sync only: subscribe before the scan and replay keys that change "
+        "during the copy (closes the scan window)",
     )
     pipeline.add_argument("--workers", type=int, default=sup, help="default: 8")
     pipeline.add_argument("--scan-batch", type=int, default=sup, help="default: 500")
@@ -631,6 +640,10 @@ def render_preview(
                 f"    pubsub refresh : {refresh}",
             ]
         )
+        if config.mode is RunMode.SYNC:
+            lines.append(
+                f"    sync catchup : {'on' if config.sync_catchup else 'off'}"
+            )
     lines.append(estimate_line)
     return "\n".join(lines)
 
@@ -809,6 +822,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         notify_flags = None
         if config.mode is not RunMode.SCAN:
             notify = coerce_notify_setting(source.notify_keyspace_events())
+            if not notify.readable:
+                logger.info(
+                    "CONFIG GET is unavailable (%s); checking notify-keyspace-events "
+                    "with a temporary key",
+                    notify.detail or "no reply",
+                )
+                notify = probe_keyspace_notifications(config, source.client)
             notify_flags = notify.flags
             family = select_channel_family(notify_flags, config.pubsub_channel)
             blocked_notify = notification_block_reason(notify, family)
@@ -819,6 +839,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 logger.error("%s", blocked_notify)
                 return 2
+            warning = notification_warning(notify, family)
+            if warning:
+                logger.warning("%s", warning)
 
         logger.info(
             "\n%s",
@@ -831,24 +854,45 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         log_migration_banner(logger)
         stats = MigrationStats()
-        if config.mode is not RunMode.PUBSUB:
-            stats = Migrator(config, source, registry, sink, stats=stats).run()
-        if config.mode is not RunMode.SCAN:
-            if config.mode is RunMode.SYNC:
-                logger.info(
-                    "initial scan finished; following keyspace notifications. "
-                    "Changes published during the scan are not replayed."
-                )
+        if config.mode is RunMode.SYNC and config.sync_catchup:
+            runner = PubSubRunner(
+                config,
+                source,
+                registry,
+                sink,
+                stats=stats,
+                notify_flags=notify_flags,
+            )
+
+            def _scan() -> None:
+                nonlocal stats
+                stats = Migrator(
+                    config, source, registry, sink, stats=stats
+                ).run()
+
             stop = threading.Event()
             with _stop_on_signal(stop):
-                stats = PubSubRunner(
-                    config,
-                    source,
-                    registry,
-                    sink,
-                    stats=stats,
-                    notify_flags=notify_flags,
-                ).run(stop)
+                stats = runner.run(stop, before_follow=_scan)
+        else:
+            if config.mode is not RunMode.PUBSUB:
+                stats = Migrator(config, source, registry, sink, stats=stats).run()
+            if config.mode is not RunMode.SCAN:
+                if config.mode is RunMode.SYNC:
+                    logger.info(
+                        "initial scan finished; following keyspace notifications. "
+                        "Changes published during the scan are not replayed. "
+                        "Set sync_catchup to replay that window."
+                    )
+                stop = threading.Event()
+                with _stop_on_signal(stop):
+                    stats = PubSubRunner(
+                        config,
+                        source,
+                        registry,
+                        sink,
+                        stats=stats,
+                        notify_flags=notify_flags,
+                    ).run(stop)
         log_migration_banner(logger)
     finally:
         source.close()

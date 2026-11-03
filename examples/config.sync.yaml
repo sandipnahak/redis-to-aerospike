@@ -2,9 +2,9 @@
 #
 #   redis2aerospike --config examples/config.sync.yaml
 #
-# The scan finishes before the subscription starts. Changes published during
-# that scan are not replayed. Pause writers across the cutover if that window
-# matters.
+# sync_catchup subscribes before the scan and replays every key that changes
+# during the copy. Leave it false to subscribe only after the scan; that
+# window is then dropped.
 #
 # MemoryDB parameter group notify-keyspace-events:
 #   KEA  follow every change after the scan
@@ -14,6 +14,9 @@
 mode: sync
 pubsub_channel: auto
 pubsub_refresh_s: 30
+# Subscribe first so writes during the scan are not lost. Requires KEA
+# (or another value that publishes the commands you need). Ex only replays expiries.
+sync_catchup: true
 
 redis:
   host: clustercfg.example.memorydb.amazonaws.com

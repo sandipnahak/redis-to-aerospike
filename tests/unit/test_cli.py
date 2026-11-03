@@ -165,6 +165,8 @@ def test_redis_flags_map_and_override_yaml(tmp_path):
 
 
 class _FakeSource:
+    client = None
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -252,6 +254,7 @@ def test_render_preview_shows_pubsub_subscription():
     assert "run mode    : sync" in preview
     assert "pubsub      : keyspace __keyspace@0__:* on each cluster primary" in preview
     assert "notify flags : KEA" in preview
+    assert "sync catchup : off" in preview
 
 
 def test_pubsub_mode_follows_without_scanning(monkeypatch):
@@ -361,7 +364,7 @@ def test_pubsub_exits_when_notify_parameter_is_missing(monkeypatch):
     assert _Runner.ran is False
 
 
-def test_pubsub_exits_when_notify_parameter_cannot_be_read(monkeypatch):
+def test_pubsub_continues_when_config_get_is_rejected(monkeypatch):
     stats = MigrationStats()
 
     class _Runner:
@@ -382,9 +385,18 @@ def test_pubsub_exits_when_notify_parameter_cannot_be_read(monkeypatch):
     monkeypatch.setattr(cli, "AerospikeSink", _FakeSink)
     monkeypatch.setattr(cli, "Migrator", _fake_migrator(stats))
     monkeypatch.setattr(cli, "PubSubRunner", _Runner)
+    from redis_to_aerospike.keyspace import KeyspaceNotifyConfig
 
-    assert cli.main(["--mode", "pubsub"]) == 2
-    assert _Runner.ran is False
+    monkeypatch.setattr(
+        cli,
+        "probe_keyspace_notifications",
+        lambda config, client: KeyspaceNotifyConfig(
+            flags="KEA", readable=True, present=True, detail="confirmed by a test write"
+        ),
+    )
+
+    assert cli.main(["--mode", "pubsub"]) == 0
+    assert _Runner.ran is True
 
 
 def test_dry_run_skips_migration(monkeypatch):

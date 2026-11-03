@@ -12,7 +12,13 @@ from redis_to_aerospike.config import (
 from redis_to_aerospike.converters.registry import ConverterRegistry
 from redis_to_aerospike.keyspace import KeyChange
 from redis_to_aerospike.models import RedisRecord
-from redis_to_aerospike.pubsub_sync import KeyspaceListener, PubSubRunner, primary_endpoints
+from redis_to_aerospike.pubsub_sync import (
+    CatchupBuffer,
+    KeyspaceListener,
+    PubSubRunner,
+    primary_endpoints,
+    probe_keyspace_notifications,
+)
 
 
 class _Source:
@@ -161,8 +167,8 @@ class _ScriptedPubSub:
         self.patterns = []
         self.closed = False
 
-    def psubscribe(self, pattern):
-        self.patterns.append(pattern)
+    def psubscribe(self, *patterns):
+        self.patterns.extend(patterns)
 
     def get_message(self, timeout=0.0):
         if self.messages:
@@ -216,3 +222,153 @@ def test_listener_delivers_one_notification_per_primary():
     assert change.action == "upsert"
     assert client.pubsub_obj.patterns == ["__keyspace@0__:*"]
     assert client.closed is True
+
+
+def test_catchup_keeps_the_latest_change_per_key_until_release():
+    buffer = CatchupBuffer()
+    assert buffer.offer(KeyChange("a", "set", "upsert")) is True
+    assert buffer.offer(KeyChange("a", "del", "delete")) is True
+    assert buffer.offer(KeyChange("a", "keymiss", "ignore")) is True
+    assert buffer.offer(KeyChange("b", "hset", "upsert")) is True
+
+    released = buffer.release()
+    assert [(change.key, change.action) for change in released] == [
+        ("a", "delete"),
+        ("b", "upsert"),
+    ]
+    assert buffer.offer(KeyChange("c", "set", "upsert")) is True
+    assert [change.key for change in buffer.seal()] == ["c"]
+    assert buffer.offer(KeyChange("d", "set", "upsert")) is False
+
+
+def test_listener_buffers_until_catchup_releases():
+    client = _ScriptedClient(
+        [
+            {
+                "type": "pmessage",
+                "channel": b"__keyspace@0__:user:1",
+                "data": b"set",
+            }
+        ]
+    )
+    config = MigrationConfig(mode=RunMode.SYNC, pubsub_refresh_s=0, sync_catchup=True)
+    catchup = CatchupBuffer()
+    listener = KeyspaceListener(
+        config,
+        client=None,
+        pattern="__keyspace@0__:*",
+        db=0,
+        connect=lambda host, port: client,
+        discover=lambda: [("10.0.0.1", 6379)],
+        catchup=catchup,
+    )
+    try:
+        assert listener.start() == 1
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and catchup.pending_count() == 0:
+            time.sleep(0.01)
+        released = catchup.release()
+    finally:
+        listener.stop()
+
+    assert listener.queue.empty()
+    assert [change.key for change in released] == ["user:1"]
+
+
+class _LivePubSub:
+    def __init__(self):
+        self.messages = []
+        self.patterns = []
+        self.closed = False
+
+    def psubscribe(self, *patterns):
+        self.patterns.extend(patterns)
+
+    def get_message(self, timeout=0.0):
+        if self.messages:
+            return self.messages.pop(0)
+        time.sleep(0.01)
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class _LiveNode:
+    def __init__(self, pubsub):
+        self.pubsub_obj = pubsub
+        self.closed = False
+
+    def pubsub(self, ignore_subscribe_messages=True):
+        return self.pubsub_obj
+
+    def close(self):
+        self.closed = True
+
+
+class _ProbeRedis:
+    def __init__(self, pubsub, mode):
+        self.pubsub = pubsub
+        self.mode = mode
+        self.deleted = []
+
+    def set(self, key, value, px=None):
+        if self.mode == "write":
+            self.pubsub.messages.append(
+                {
+                    "type": "pmessage",
+                    "channel": f"__keyspace@0__:{key}".encode(),
+                    "data": b"set",
+                }
+            )
+        elif self.mode == "expire" and px == 200:
+            self.pubsub.messages.append(
+                {
+                    "type": "pmessage",
+                    "channel": b"__keyevent@0__:expired",
+                    "data": str(key).encode(),
+                }
+            )
+
+    def delete(self, key):
+        self.deleted.append(key)
+
+    def get(self, key):
+        return None
+
+
+def _probe(mode, **timeouts):
+    pubsub = _LivePubSub()
+    data = _ProbeRedis(pubsub, mode)
+    result = probe_keyspace_notifications(
+        MigrationConfig(mode=RunMode.PUBSUB),
+        data,
+        connect=lambda host, port: _LiveNode(pubsub),
+        discover=lambda: [("10.0.0.1", 6379)],
+        expire_wait_s=0,
+        **timeouts,
+    )
+    return result, data, pubsub
+
+
+def test_probe_write_confirms_keyspace_notifications():
+    result, data, pubsub = _probe("write")
+    assert result.flags == "KEA"
+    assert result.present is True
+    assert data.deleted
+    assert "__keyspace@0__:*" in pubsub.patterns
+    assert "__keyevent@0__:*" in pubsub.patterns
+
+
+def test_probe_expiry_confirms_ex_when_a_write_is_silent():
+    result, data, _pubsub = _probe("expire", write_timeout_s=0.2, expire_timeout_s=1)
+    assert result.flags == "Ex"
+    assert result.present is True
+    assert data.deleted
+
+
+def test_probe_with_no_notification_is_inactive():
+    result, _data, _pubsub = _probe("silent", write_timeout_s=0.15, expire_timeout_s=0.15)
+    assert result.present is False
+    assert result.readable is True
+    assert result.detail == "probe"

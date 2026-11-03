@@ -342,10 +342,10 @@ class RedisSource:
     def notify_keyspace_events(self):
         """Read ``notify-keyspace-events``. Never raises.
 
-        A rejected ``CONFIG GET`` is ``readable=False``. A successful reply
-        without the parameter is ``present=False``. An empty value means the
-        parameter group has notifications turned off. ``pubsub`` and ``sync``
-        exit in all three cases.
+        A rejected ``CONFIG GET`` is ``readable=False`` and is not fatal.
+        MemoryDB does not implement ``CONFIG``. A successful reply without the
+        parameter is ``present=False``. An empty value means notifications are
+        off. ``pubsub`` and ``sync`` exit in those two cases.
         """
         from .keyspace import KeyspaceNotifyConfig, normalize_notify_flags
 

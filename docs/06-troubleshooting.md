@@ -150,10 +150,11 @@ Keyspace notifications are off until the MemoryDB parameter group sets
 `notify-keyspace-events`. `KEA` publishes every change; `Ex` publishes only
 expired keys, and only on the keyevent channel.
 
-- The preview line `notify flags` shows the value the tool read. `(empty)`,
-  `unreadable`, or a missing parameter exits `pubsub` and `sync` with code 2
-  before any scan or subscription. Pass `--pubsub-channel keyevent` for `Ex`,
-  or `keyspace` for `KEA`.
+- The preview line `notify flags` shows `KEA` or `Ex` after a successful
+  `CONFIG GET`, or after a temporary-key probe when MemoryDB rejects
+  `CONFIG GET`. No notification for that key exits `pubsub` and `sync` with
+  code 2. `(empty)` from a successful `CONFIG GET` does the same. Pass
+  `--pubsub-channel keyevent` for `Ex`, or `keyspace` for `KEA`.
 - MemoryDB is a cluster. The log line `listening for keyspace notifications
   on N node(s)` should list every primary. A standalone client pointed at
   one node only sees that node's keys. Set `--redis-cluster`.

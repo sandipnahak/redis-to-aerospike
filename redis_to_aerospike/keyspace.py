@@ -104,23 +104,55 @@ def coerce_notify_setting(value: Any) -> KeyspaceNotifyConfig:
     return KeyspaceNotifyConfig(flags=str(value), readable=True, present=True)
 
 
+def notification_warning(setting: KeyspaceNotifyConfig, family: str) -> str | None:
+    """Warn when ``CONFIG GET`` is rejected. The run still starts.
+
+    MemoryDB returns ``unknown command 'CONFIG'`` even when the parameter
+    group has ``notify-keyspace-events`` set. That is not proof the parameter
+    is off.
+    """
+    del family
+    if setting.readable:
+        return None
+    detail = f" ({setting.detail})" if setting.detail else ""
+    return (
+        "Could not read notify-keyspace-events"
+        f"{detail}. The server does not allow CONFIG GET, which is normal on "
+        "MemoryDB. The parameter group is the source of truth, so pubsub and "
+        "sync will subscribe anyway. Use KEA, or Ex with pubsub_channel "
+        "keyevent. auto cannot see the parameter and selects keyspace."
+    )
+
+
 def notification_block_reason(
     setting: KeyspaceNotifyConfig, family: str
 ) -> Optional[str]:
-    """Fatal reason for ``pubsub`` and ``sync`` when notifications are not confirmed.
+    """Fatal reason for ``pubsub`` and ``sync`` when a successful read shows notifications are off.
 
-    ``pubsub`` and ``sync`` exit unless the server returns a value that publishes
-    on ``family``. A rejected ``CONFIG GET``, a missing parameter, and an empty
-    value are the same outcome: the cluster will not deliver events, or we
-    cannot prove that it will.
+    A rejected ``CONFIG GET`` is not fatal. An answer that omits the parameter,
+    sets it to empty, or omits the letter for this channel family means the
+    cluster will publish nothing.
     """
-    if not setting.readable or not setting.present or not setting.flags:
-        detail = f" ({setting.detail})" if setting.detail else ""
+    if not setting.readable:
+        if setting.detail and setting.detail.startswith("probe failed"):
+            return (
+                "Could not check notify-keyspace-events "
+                f"({setting.detail}). pubsub and sync exit because notifications "
+                "were not confirmed."
+            )
+        return None
+    if not setting.present or not setting.flags:
+        if setting.detail and setting.detail.startswith("probe"):
+            return (
+                "notify-keyspace-events is not active. A temporary test key "
+                "produced no notification. Set the MemoryDB parameter group to "
+                "KEA (all changes) or Ex (expired keys only), apply it, and re-run."
+            )
         return (
-            "notify-keyspace-events was not found"
-            f"{detail}. pubsub and sync exit because the cluster parameter "
-            "group does not show an active value. Set it to KEA (all changes) "
-            "or Ex (expired keys only), apply the parameter group, and re-run."
+            "notify-keyspace-events is not set in the cluster parameter group. "
+            "pubsub and sync exit because the cluster would publish nothing. "
+            "Set it to KEA (all changes) or Ex (expired keys only), apply the "
+            "parameter group, and re-run."
         )
     needed = "K" if family == "keyspace" else "E"
     if needed not in set(setting.flags):

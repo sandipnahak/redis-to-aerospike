@@ -31,12 +31,17 @@ With `pubsub_channel: auto` (the default):
 - `KEA` subscribes to `__keyspace@0__:*` (the key is in the channel, the event name is the message).
 - `Ex` subscribes to `__keyevent@0__:*` (the event name is in the channel, the key is the message).
 
-`pubsub` and `sync` exit with code 2 before scanning or subscribing when
-`notify-keyspace-events` is missing, empty, or `CONFIG GET` cannot read it.
-`scan` does not read the parameter. A value that is set but does not include
-`K` for a keyspace subscription, or `E` for a keyevent subscription, also
-exits with code 2. `Ex` needs `pubsub_channel: keyevent` (or `auto`, which
-selects keyevent when it can read `Ex`).
+MemoryDB does not implement `CONFIG GET`. When that command is rejected,
+`pubsub` and `sync` subscribe on every primary and write a temporary key
+named `redis2aerospike:notify-probe:<id>`. A notification for that key means
+the parameter is active: a write event is treated as `KEA`, and only an
+`expired` event is treated as `Ex`. No notification exits with code 2. The
+key is deleted before the copy starts. `auto` then follows the probe result.
+
+`pubsub` and `sync` also exit with code 2 when `CONFIG GET` succeeds and
+`notify-keyspace-events` is missing, empty, or lacks `K` for a keyspace
+subscription or `E` for a keyevent subscription. `scan` does not read the
+parameter.
 
 ## Example configs
 
@@ -74,9 +79,15 @@ Stop the listener with Ctrl+C. A second interrupt aborts immediately.
 Events published while the process is down are gone; Redis pub/sub does not
 keep them.
 
-`--mode sync` copies the keyspace, then subscribes. Changes published
-**during** that scan are not replayed. Pause writers across the cutover, or
-run a second `--mode scan` later, if that window matters.
+`--mode sync` with `sync_catchup: false` (the default) copies the keyspace,
+then subscribes. Changes published **during** that scan are not replayed.
+
+`sync_catchup: true` subscribes before the scan. Each key that changes during
+the copy is replayed once the scan finishes, then the live tail continues.
+That closes the scan window. It does not recover events from while the
+process is stopped, or from a gap while a primary subscription is down.
+Redis pub/sub does not store those. Use `KEA` so writes, deletes, and
+expiries are all published. `Ex` only replays expiries.
 
 ## What each event does
 

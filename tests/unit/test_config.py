@@ -90,11 +90,19 @@ def test_migration_mode_from_env_and_yaml():
     assert env.pubsub_refresh_s == 0
 
     cfg = MigrationConfig.from_dict(
-        {"mode": "sync", "pubsub_channel": "keyspace", "pubsub_refresh_s": 15}
+        {
+            "mode": "sync",
+            "pubsub_channel": "keyspace",
+            "pubsub_refresh_s": 15,
+            "sync_catchup": True,
+        }
     )
     assert cfg.mode is RunMode.SYNC
     assert cfg.pubsub_channel is PubSubChannel.KEYSPACE
     assert cfg.pubsub_refresh_s == 15
+    assert cfg.sync_catchup is True
+    assert MigrationConfig.from_env({"MIGRATION_SYNC_CATCHUP": "true"}).sync_catchup is True
+    assert MigrationConfig().sync_catchup is False
 
 
 def test_empty_password_env_becomes_none():
