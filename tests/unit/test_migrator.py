@@ -443,6 +443,32 @@ def test_batch_mode_duplicate_keys_collapse_to_one_write():
     assert set(sink.written) == {"dup", "solo"}
 
 
+def test_replay_skips_a_record_when_aerospike_is_newer():
+    sink = FakeSink()
+    sink.last_update_ms = lambda key, set_name=None: 9_000_000_000_000
+    migrator = Migrator(make_config(), FakeSource([]), ConverterRegistry(), sink)
+    record = RedisRecord(key="user:1", type="string", value=b"v", ttl_ms=None)
+
+    assert migrator.replay_upsert(record, "2026-11-03T16:42:00+05:30") is False
+    migrator.replay_delete("user:1", "2026-11-03T16:42:00+05:30")
+
+    assert sink.written == {}
+    assert migrator.stats.skipped_by_type["latest"] == 2
+    assert migrator.stats.migrated == 0
+    assert migrator.stats.deleted == 0
+
+
+def test_replay_writes_when_aerospike_is_older():
+    sink = FakeSink()
+    sink.last_update_ms = lambda key, set_name=None: 0
+    migrator = Migrator(make_config(), FakeSource([]), ConverterRegistry(), sink)
+    record = RedisRecord(key="user:1", type="string", value=b"v", ttl_ms=None)
+
+    assert migrator.replay_upsert(record, "2026-11-03T16:42:00+05:30") is True
+    assert "user:1" in sink.written
+    assert migrator.stats.migrated == 1
+
+
 def test_rate_limiter_counts_individual_records_even_when_batched():
     records = [RedisRecord(key=f"k{i}", type="string", value=b"1") for i in range(20)]
     sink = BatchSink()

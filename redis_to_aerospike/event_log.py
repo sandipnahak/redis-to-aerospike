@@ -182,6 +182,33 @@ def iter_event_log(path: str) -> Iterator[dict[str, Any]]:
             yield entry
 
 
+def event_time_ms(value: Any) -> Optional[int]:
+    """Unix milliseconds for a log line's ``time`` field. ``None`` if absent."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    return int(moment.timestamp() * 1000)
+
+
+def destination_is_newer(destination_ms: Optional[int], event_time: Any) -> bool:
+    """True when Aerospike was updated at or after the log line.
+
+    ``event_time`` is the tracking stamp. A missing stamp or an unknown
+    destination time means the line should still be applied.
+    """
+    if destination_ms is None:
+        return False
+    event_ms = event_time_ms(event_time)
+    if event_ms is None:
+        return False
+    return destination_ms >= event_ms
+
+
 def seq_selected(entry: dict[str, Any], from_seq: Optional[int]) -> bool:
     """True when this line should be applied.
 

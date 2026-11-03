@@ -12,9 +12,19 @@ from redis_to_aerospike.aerospike_sink import (
     BATCH_RECORD_EXISTS_OUTCOME,
     RecordAlreadyExists,
     RecordTooLargeError,
+    lut_to_unix_ms,
 )
 from redis_to_aerospike.config import AerospikeConfig, RecordExistsPolicy
 from redis_to_aerospike.models import TTL_NEVER_EXPIRE, AerospikeRecord, BinWritePolicy
+
+
+def test_lut_to_unix_ms_accepts_aerospike_and_unix_forms():
+    # Milliseconds since 2010-01-01 UTC.
+    assert lut_to_unix_ms(0) == 1_262_304_000_000
+    # Unix milliseconds and Unix nanoseconds for the same instant.
+    unix_ms = 1_762_000_000_000
+    assert lut_to_unix_ms(unix_ms) == unix_ms
+    assert lut_to_unix_ms(unix_ms * 1_000_000) == unix_ms
 
 
 def make_sink(client, max_record_size=8 * 1024 * 1024, **aerospike_kwargs):

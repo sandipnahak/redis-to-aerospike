@@ -6,7 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 from redis_to_aerospike.event_log import (
     EventLog,
+    destination_is_newer,
     dump_obj,
+    event_time_ms,
     load_obj,
     record_from_entry,
     replay_log,
@@ -23,6 +25,17 @@ def test_dump_obj_roundtrips_binary_and_containers():
         "scores": [("x", 1.5)],
     }
     assert load_obj(dump_obj(value)) == value
+
+
+def test_destination_is_newer_compares_update_time_with_the_line():
+    stamp = "2026-11-03T16:42:00+05:30"
+    event_ms = event_time_ms(stamp)
+    assert event_ms is not None
+    assert destination_is_newer(event_ms, stamp) is True
+    assert destination_is_newer(event_ms + 1, stamp) is True
+    assert destination_is_newer(event_ms - 1, stamp) is False
+    assert destination_is_newer(None, stamp) is False
+    assert destination_is_newer(event_ms, None) is False
 
 
 def test_event_log_name_includes_a_local_timestamp():

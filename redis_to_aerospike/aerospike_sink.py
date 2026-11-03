@@ -22,6 +22,21 @@ from .models import AerospikeRecord, BinWritePolicy
 
 logger = logging.getLogger(__name__)
 
+# Aerospike stores last-update time as milliseconds since 2010-01-01 UTC
+# when it is not already a Unix timestamp.
+_AEROSPIKE_EPOCH_MS = 1_262_304_000_000
+
+
+def lut_to_unix_ms(lut: int) -> int:
+    """Convert an Aerospike ``lut`` metadata value to Unix milliseconds."""
+    if lut >= 10**18:
+        return lut // 10**6
+    if lut >= 10**15:
+        return lut // 10**3
+    if lut >= 10**12:
+        return lut
+    return lut + _AEROSPIKE_EPOCH_MS
+
 # Batch ``write_many`` outcome string when CREATE_ONLY hits an existing record.
 BATCH_RECORD_EXISTS_OUTCOME = "RecordExists"
 
@@ -443,6 +458,27 @@ class AerospikeSink:
             ):
                 raise RecordAlreadyExists from exc
             raise
+
+    def last_update_ms(self, key: str | bytes, set_name: Optional[str] = None) -> Optional[int]:
+        """Unix milliseconds of the record's last update, or ``None`` if absent.
+
+        Replay uses this to skip a line when the destination is already newer.
+        A missing record and a server that omits ``lut`` both return ``None``.
+        """
+        if self._client is None:
+            raise RuntimeError("AerospikeSink is not connected; call connect() first")
+        key_tuple = (self._config.namespace, set_name or self._config.set_name, key)
+        try:
+            got = self._client.get(key_tuple)
+        except Exception as exc:
+            if self._is_not_found(exc):
+                return None
+            raise
+        meta = got[1] if isinstance(got, tuple) and len(got) >= 2 else None
+        lut = meta.get("lut") if isinstance(meta, dict) else None
+        if lut is None:
+            return None
+        return lut_to_unix_ms(int(lut))
 
     def remove(self, key: str | bytes, set_name: Optional[str] = None) -> None:
         """Delete one Aerospike record. A missing record is not an error.

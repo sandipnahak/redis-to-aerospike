@@ -834,10 +834,10 @@ def _run_replay(config: MigrationConfig, dry_run: bool) -> int:
             stats.record_event()
             action = entry.get("action")
             if action == "delete":
-                migrator.delete_key(load_obj(entry["key"]))
+                migrator.replay_delete(load_obj(entry["key"]), entry.get("time"))
                 return
             if action == "upsert":
-                migrator.write_redis_record(record_from_entry(entry), full_replace=True)
+                migrator.replay_upsert(record_from_entry(entry), entry.get("time"))
                 return
             stats.record_skipped(str(action or "unknown"))
 

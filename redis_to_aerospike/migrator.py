@@ -19,11 +19,12 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Iterator, List, Optional, Protocol
+from typing import Any, Iterator, List, Optional, Protocol
 
 from .aerospike_sink import BATCH_RECORD_EXISTS_OUTCOME, RecordAlreadyExists
 from .config import HashStrategy, MigrationConfig, RecordExistsPolicy
 from .converters.registry import ConverterRegistry, UnsupportedTypeError
+from .event_log import destination_is_newer
 from .models import AerospikeRecord, RedisRecord
 from .progress import ProgressReporter
 from .ratelimit import TokenBucket
@@ -96,6 +97,42 @@ class Migrator:
         prepared.full_replace = full_replace
         self._write_one(prepared, record.key)
         return True
+
+    def replay_upsert(self, record: RedisRecord, event_time: Any) -> bool:
+        """Write one replay snapshot, unless Aerospike already has a newer record."""
+        if self._destination_is_latest(record.key, event_time):
+            return False
+        return self.write_redis_record(record, full_replace=True)
+
+    def replay_delete(self, key: str | bytes, event_time: Any) -> None:
+        """Delete one replay key, unless Aerospike already has a newer record."""
+        if self._destination_is_latest(key, event_time):
+            return
+        self.delete_key(key)
+
+    def _destination_is_latest(self, key: str | bytes, event_time: Any) -> bool:
+        updated = self._destination_update_ms(key)
+        if not destination_is_newer(updated, event_time):
+            return False
+        self.stats.record_skipped("latest")
+        logger.debug(
+            "skipping key '%s'; Aerospike record is newer than the replay line",
+            key,
+        )
+        return True
+
+    def _destination_update_ms(self, key: str | bytes) -> Optional[int]:
+        reader = getattr(self._sink, "last_update_ms", None)
+        if reader is None:
+            return None
+        resolution = self._set_router.resolve(key)
+        try:
+            return reader(resolution.key, resolution.set_name)
+        except Exception as exc:
+            logger.warning(
+                "could not read last update time for key '%s': %s", key, exc
+            )
+            return None
 
     def delete_key(self, key: str | bytes) -> None:
         """Remove the Aerospike record that ``key`` maps to, including set routes."""

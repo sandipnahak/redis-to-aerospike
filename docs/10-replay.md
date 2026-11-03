@@ -102,9 +102,15 @@ key replaces an earlier one.
 
 | Line | Aerospike action |
 | --- | --- |
-| `action: upsert` | Write the stored snapshot. The record replaces the existing one unless `record_exists_policy` is `create_only`. |
-| `action: delete` | Delete the Aerospike record for that key. |
+| `action: upsert` | Write the stored snapshot, unless the Aerospike record is already newer. The record replaces the existing one unless `record_exists_policy` is `create_only`. |
+| `action: delete` | Delete the Aerospike record, unless that record is already newer than the line. |
 | Any other `action` | Skip the line and count it. |
+
+Before each write or delete, replay reads the destination record's last update
+time. When that time is the same as or later than the line's `time`, the
+destination is already the latest value and the line is skipped. The summary
+counts those skips as `latest`. A missing record is written. A line with no
+`time`, or a server that does not return a last update time, is applied.
 
 Set routes, the TTL overflow policy, and the write rate limit apply the same
 way they do on a live tail. Replay does not re-read Redis, so the snapshot in
@@ -115,7 +121,7 @@ the file is what gets written.
 - Keys copied by the initial `SCAN` of `--mode sync`.
 - Changes that happened while the process was stopped. Redis pub/sub does not keep them.
 - Changes missed while a primary subscription was down.
-- The `time` field, for ordering. Order is `seq`, then file order.
+- `time` for ordering. Order is `seq`, then file order. `time` is compared only with the destination's last update time.
 
 Catch-up of the scan window is `sync_catchup` on a live `sync` run. That is
 separate from `--mode replay`. See
