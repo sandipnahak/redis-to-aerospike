@@ -189,7 +189,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(
         f"Writing {args.count} keys as "
         f"strings={counts_preview[0]}, hashes={counts_preview[1]}, "
-        f"lists={counts_preview[2]}, sets={counts_preview[3]}, zsets={counts_preview[4]} …",
+        f"lists={counts_preview[2]}, sets={counts_preview[3]}, zsets={counts_preview[4]} ...",
     )
     seed(client, args.count)
     client.close()

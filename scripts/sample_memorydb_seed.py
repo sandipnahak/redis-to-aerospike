@@ -87,7 +87,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(
         f"Writing {args.count} keys ({KEY_PREFIX}:*) on database 0 as "
         f"strings={counts[0]}, hashes={counts[1]}, lists={counts[2]}, "
-        f"sets={counts[3]}, zsets={counts[4]} …",
+        f"sets={counts[3]}, zsets={counts[4]} ...",
     )
     try:
         seed(client, args.count)

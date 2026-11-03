@@ -224,7 +224,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.per_route is None:
         print(
             f"Targeting >= {args.count} keys (per-route depth {per_route} → "
-            f"{_total_keys_for_per_route(per_route)} keys) …"
+            f"{_total_keys_for_per_route(per_route)} keys) ..."
         )
     seed(client, per_route)
     client.close()
